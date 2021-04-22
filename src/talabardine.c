@@ -3,6 +3,7 @@
 #include "pm.h"
 #include "sysctrl.h"
 #include "sercom.h"
+#include "atqt2120.h"
 
 #define SERCOM_MIDI_CHANNEL 1
 #define SERCOM_CODEC_CHANNEL 0 // or 2
@@ -31,6 +32,25 @@
  *     # LEDs
  *         PB07
  */
+
+const struct atqt2120_t keys_config = {
+    .keys = {
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0}
+    },
+    .change_port = GPIO_PORT_B,
+    .change_pin = 5
+};
 
 static void talabardine_init_gpios(void)
 {
@@ -86,8 +106,13 @@ void talabardine_init(void)
     talabardine_init_sercoms();
     sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Salut !\r\nJe suis un programme\r\n");
 
-    void atqt2120_test(void);
-    atqt2120_test();
+    atqt2120_init(&keys_config);
+    for(;;)
+    {
+        while(gpio_read(keys_config.change_port, keys_config.change_pin));
+        uint8_t status = atqt2120_read_status();
+        sercom_usart_display_half(status);
+    }
 }
 
 uint16_t talabardine_get_pressure(void)

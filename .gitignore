@@ -1,1 +1,4 @@
 bin/
+src/*.o
+src/vector.s
+src/vector.s
