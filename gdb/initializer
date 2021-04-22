@@ -1,0 +1,16 @@
+define program-and-debug
+    set pagination off
+    target extended-remote :3333
+
+    load $arg0
+    monitor reset halt
+
+    # Prepare debugging session for bin/kernel
+    symbol-file $arg0
+end
+
+define program
+    program-and-debug $arg0
+    monitor reset run
+    q
+end

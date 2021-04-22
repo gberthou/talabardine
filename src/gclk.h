@@ -1,0 +1,53 @@
+#ifndef GCLK_H
+#define GCLK_H
+
+#include <stdint.h>
+
+enum gclk_dst_e
+{
+    GCLK_DST_DFLL48M_REF = 0,
+    GCLK_DST_DPLL,
+    GCLK_DST_DPLL_32K,
+    GCLK_DST_WDT,
+    GCLK_DST_RTC,
+    GCLK_DST_EIC,
+    GCLK_DST_USB,
+    GCLK_DST_EVSYS_CHANNEL_0,
+    GCLK_DST_EVSYS_CHANNEL_1,
+    GCLK_DST_EVSYS_CHANNEL_2,
+    GCLK_DST_EVSYS_CHANNEL_3,
+    GCLK_DST_EVSYS_CHANNEL_4,
+    GCLK_DST_EVSYS_CHANNEL_5,
+    GCLK_DST_EVSYS_CHANNEL_6,
+    GCLK_DST_EVSYS_CHANNEL_7,
+    GCLK_DST_EVSYS_CHANNEL_8,
+    GCLK_DST_EVSYS_CHANNEL_9,
+    GCLK_DST_EVSYS_CHANNEL_10,
+    GCLK_DST_EVSYS_CHANNEL_11,
+    GCLK_DST_SERCOMx_SLOW,
+    GCLK_DST_SERCOM0_CORE,
+    GCLK_DST_SERCOM1_CORE,
+    GCLK_DST_SERCOM2_CORE,
+    GCLK_DST_SERCOM3_CORE,
+    GCLK_DST_SERCOM4_CORE,
+    GCLK_DST_SERCOM5_CORE,
+    GCLK_DST_TCC01,
+    GCLK_DST_TCC2_TC3,
+    GCLK_DST_TC45,
+    GCLK_DST_TC67,
+    GCLK_DST_ADC,
+    GCLK_DST_AC_DIG,
+    GCLK_DST_AC_ANA,
+    GCLK_DST_DAC,
+    GCLK_DST_PTC,
+    GCLK_DST_I2S_0,
+    GCLK_DST_I2S_1,
+    GCLK_DST_TC3
+};
+
+void gclk_main_48MHz(void);
+void gclk_connect_clock(enum gclk_dst_e dst, uint8_t gclkid);
+void gclk_disconnect_clock(enum gclk_dst_e dst);
+
+#endif
+
