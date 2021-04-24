@@ -8,7 +8,8 @@
 
 #define ADD_DETECTION_STATUS 2
 #define ADD_RESET 7
-#define ADD_KEYCTRL0 28
+#define ADD_DI 11
+#define ADD_DTHR0 16
 
 /* const uint8_t *data format:
  *    data[0] = local address
@@ -44,36 +45,46 @@ void atqt2120_test(void)
 
 void atqt2120_init(const struct atqt2120_t *config)
 {
-    uint8_t tmp[NKEYS + 1];
+    union key_u {
+        struct atqt2120_key_t key;
+        uint8_t data[2];
+    };
+
+    uint8_t tmp[2 * NKEYS + 1];
+
     // 1. RESET
     tmp[0] = ADD_RESET;
     tmp[1] = 1;
     i2c_write(tmp, 2);
+    while(gpio_read(config->change_port, config->change_pin));
+    atqt2120_read_status();
     while(!gpio_read(config->change_port, config->change_pin));
 
-    // 2. Configure keys
-    tmp[0] = ADD_KEYCTRL0;
-    for(size_t i = 0; i < NKEYS;)
-    {
-        union {
-            struct atqt2120_key_t key;
-            uint8_t data;
-        } k = {.key = config->keys[i]};
-        tmp[++i] = k.data;
-    }
+    tmp[0] = 16; // DTHR
+    for(size_t i = 0; i++ < NKEYS;)
+        tmp[i] = 64;
     i2c_write(tmp, NKEYS + 1);
+    
+    // 2. Set DI (lower = higher time-related reactivity)
+    tmp[0] = ADD_DI;
+    tmp[1] = config->di;
+    i2c_write(tmp, 2);
+
+    // 3. Configure keys
+    tmp[0] = ADD_DTHR0;
+    for(size_t i = 0; i < NKEYS; ++i)
+    {
+        union key_u k = {.key = config->keys[i]};
+        tmp[i        ] = k.data[0];
+        tmp[i + NKEYS] = k.data[1];
+    }
+    i2c_write(tmp, 2 * NKEYS + 1);
 }
 
 uint8_t atqt2120_read_status(void)
 {
-#if 0
-    uint8_t ret;
-    i2c_read(ADD_STATUS, &ret, 1);
-    return ret;
-#else
     uint8_t tmp[3];
     i2c_read(ADD_DETECTION_STATUS, tmp, 3);
     return tmp[2];
-#endif
 }
 

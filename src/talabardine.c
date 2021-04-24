@@ -31,21 +31,22 @@
 
 const struct atqt2120_t keys_config = {
     .keys = {
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0}
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
+        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64}
     },
     .change_port = GPIO_PORT_B,
-    .change_pin = 5
+    .change_pin = 5,
+    .di = 1
 };
 
 static void talabardine_init_gpios(void)
@@ -100,8 +101,10 @@ void talabardine_init(void)
     sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Salut !\r\nJe suis un programme\r\n");
 
     atqt2120_init(&keys_config);
+    bool t = false;
     for(;;)
     {
+#if 0
         while(gpio_read(keys_config.change_port, keys_config.change_pin))
         {
             uint16_t p = abp_get_pressure();
@@ -109,6 +112,13 @@ void talabardine_init(void)
         }
         uint8_t status = atqt2120_read_status();
         sercom_usart_display_half(status);
+#endif
+        while(gpio_read(keys_config.change_port, keys_config.change_pin));
+        //uint8_t status = 
+        atqt2120_read_status();
+        t = !t;
+        gpio_set_output(GPIO_PORT_B, 7, t);
+        //sercom_usart_display_half(status);
     }
 }
 
