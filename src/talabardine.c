@@ -1,14 +1,11 @@
+#include "config.h"
 #include "gclk.h"
 #include "gpio.h"
 #include "pm.h"
 #include "sysctrl.h"
 #include "sercom.h"
 #include "atqt2120.h"
-
-#define SERCOM_MIDI_CHANNEL 1
-#define SERCOM_CODEC_CHANNEL 0 // or 2
-#define SERCOM_PRESSURE_CHANNEL 2 
-#define SERCOM_KEYS_CHANNEL 4
+#include "abp-spi.h"
 
 /*
  * Pin mapping:
@@ -20,11 +17,10 @@
  *         PA09 = /CE
  *         PA10 = MOSI
  *         PA11 = SCK
- *     # Pressure (SERCOM 2) // TODO
- *         PA12 = MISO
- *         PA13 = /CE
- *         PA14 = MOSI
- *         PA15 = SCK
+ *     # Pressure (SERCOM 0)
+ *         PA04 = MISO
+ *         PA05 = SCK
+ *         PA06 = /CE
  *     # Keys (SERCOM 4)
  *         PB12 = SDA
  *         PB13 = SCL
@@ -66,14 +62,11 @@ static void talabardine_init_gpios(void)
     gpio_configure_function(GPIO_PORT_A, 0, GPIO_FUNC_D);
     gpio_configure_function(GPIO_PORT_A, 1, GPIO_FUNC_D);
 
-    // Pressure (SERCOM 2)
-    /*
-    gpio_configure_function(GPIO_PORT_A, 12, GPIO_FUNC_C);
-    gpio_configure_io      (GPIO_PORT_A, 13, true); // /CE must be manual because of SPI bursts
-    gpio_set_output        (GPIO_PORT_A, 13, true);
-    gpio_configure_function(GPIO_PORT_A, 14, GPIO_FUNC_C);
-    gpio_configure_function(GPIO_PORT_A, 15, GPIO_FUNC_C);
-    */
+    // Pressure (SERCOM 0)
+    gpio_configure_function(GPIO_PORT_A, 4, GPIO_FUNC_D);
+    gpio_configure_function(GPIO_PORT_A, 5, GPIO_FUNC_D);
+    gpio_configure_io      (GPIO_PORT_A, 6, true); // /CE must be manual because of SPI bursts
+    gpio_set_output        (GPIO_PORT_A, 6, true);
 
     // Keys (SERCOM 4)
     gpio_configure_function(GPIO_PORT_B, 12, GPIO_FUNC_C);
@@ -88,7 +81,7 @@ static void talabardine_init_gpios(void)
 static void talabardine_init_sercoms(void)
 {
     sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 115200);
-    //sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD231, SPI_IN_PAD0, 800000);
+    sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD312, SPI_IN_PAD0, 800000);
     sercom_init_i2c_master(SERCOM_KEYS_CHANNEL, 400000);
 }
 
@@ -109,20 +102,13 @@ void talabardine_init(void)
     atqt2120_init(&keys_config);
     for(;;)
     {
-        while(gpio_read(keys_config.change_port, keys_config.change_pin));
+        while(gpio_read(keys_config.change_port, keys_config.change_pin))
+        {
+            uint16_t p = abp_get_pressure();
+            sercom_usart_display_half(p);
+        }
         uint8_t status = atqt2120_read_status();
         sercom_usart_display_half(status);
     }
-}
-
-uint16_t talabardine_get_pressure(void)
-{
-    /*
-    uint16_t tx;
-    uint16_t rx;
-    sercom_spi_burst(SERCOM_PRESSURE_CHANNEL, GPIO_PORT_A, 13, &rx, &tx, sizeof(rx));
-    return rx;
-    */
-    return 0;
 }
 

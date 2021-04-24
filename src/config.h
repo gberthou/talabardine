@@ -1,0 +1,10 @@
+#ifndef CONFIG_H
+#define CONFIG_H
+
+#define SERCOM_MIDI_CHANNEL 1
+#define SERCOM_CODEC_CHANNEL // TODO
+#define SERCOM_PRESSURE_CHANNEL 0
+#define SERCOM_KEYS_CHANNEL 4
+
+#endif
+
