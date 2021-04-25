@@ -6,6 +6,10 @@
 #include "sercom.h"
 #include "atqt2120.h"
 #include "abp-spi.h"
+#include "nvic.h"
+#include "eic.h"
+
+#define EIC_KEYCHANGE 5
 
 /*
  * Pin mapping:
@@ -72,7 +76,7 @@ static void talabardine_init_gpios(void)
     // Keys (SERCOM 4)
     gpio_configure_function(GPIO_PORT_B, 12, GPIO_FUNC_C);
     gpio_configure_function(GPIO_PORT_B, 13, GPIO_FUNC_C);
-    gpio_configure_io(GPIO_PORT_B, 5, false);
+    // /CHANGE signal is handled by atqt2120_init
 
     // LED
     gpio_configure_io(GPIO_PORT_B, 7, true);
@@ -83,8 +87,11 @@ static void talabardine_init_sercoms(void)
 {
     sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 115200);
     sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD312, SPI_IN_PAD0, 800000);
+
     sercom_init_i2c_master(SERCOM_KEYS_CHANNEL, 400000);
 }
+
+static bool t = false;
 
 void talabardine_init(void)
 {
@@ -100,8 +107,11 @@ void talabardine_init(void)
     talabardine_init_sercoms();
     sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Salut !\r\nJe suis un programme\r\n");
 
+    eic_init();
+    eic_enable(EIC_KEYCHANGE);
+    nvic_enable(NVIC_EIC);
+    __asm__ __volatile__("cpsie i");
     atqt2120_init(&keys_config);
-    bool t = false;
     for(;;)
     {
 #if 0
@@ -113,12 +123,17 @@ void talabardine_init(void)
         uint8_t status = atqt2120_read_status();
         sercom_usart_display_half(status);
 #endif
-        while(gpio_read(keys_config.change_port, keys_config.change_pin));
-        //uint8_t status = 
-        atqt2120_read_status();
-        t = !t;
-        gpio_set_output(GPIO_PORT_B, 7, t);
-        //sercom_usart_display_half(status);
     }
+}
+
+void keychange_handler(void)
+{
+    eic_clear(EIC_KEYCHANGE);
+    nvic_clear(NVIC_EIC);
+
+    //uint8_t status = atqt2120_read_status();
+    atqt2120_read_status();
+    t = !t;
+    gpio_set_output(GPIO_PORT_B, 7, t);
 }
 

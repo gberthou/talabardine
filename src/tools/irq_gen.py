@@ -13,6 +13,7 @@ NAMES = {
     15: "systick"
 }
 HANDLERS = {
+    4 : "keychange_handler"
 }
 
 def irq2label(irq):
@@ -44,5 +45,6 @@ for irq in range(N_IRQ):
     elif irq-16 in HANDLERS.keys():
         print("%s:\n    .word %s + 1\n"%(label, HANDLERS[irq-16]))
     else:
-        print("%s:\n    .word 0x%08x\n"%(label, irq2address(irq) | 1))
+        print("%s:\n    .word done + 1\n" % label)
+        #print("%s:\n    .word 0x%08x\n"%(label, irq2address(irq) | 1))
 

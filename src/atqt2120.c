@@ -51,11 +51,15 @@ void atqt2120_init(const struct atqt2120_t *config)
     };
 
     uint8_t tmp[2 * NKEYS + 1];
+    
+    // Temporarily set the /CHANGE pin as polled input
+    gpio_configure_io(config->change_port, config->change_pin, false);
 
     // 1. RESET
     tmp[0] = ADD_RESET;
     tmp[1] = 1;
     i2c_write(tmp, 2);
+
     while(gpio_read(config->change_port, config->change_pin));
     atqt2120_read_status();
     while(!gpio_read(config->change_port, config->change_pin));
@@ -79,6 +83,9 @@ void atqt2120_init(const struct atqt2120_t *config)
         tmp[i + NKEYS] = k.data[1];
     }
     i2c_write(tmp, 2 * NKEYS + 1);
+    
+    // Now, enable interrupts on /CHANGE signal
+    gpio_configure_function(config->change_port, config->change_pin, GPIO_FUNC_A);
 }
 
 uint8_t atqt2120_read_status(void)

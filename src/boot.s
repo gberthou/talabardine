@@ -33,5 +33,6 @@ enddata:
     ;@ Squadala!
     b main
 
+.global done
 done:
     b done
