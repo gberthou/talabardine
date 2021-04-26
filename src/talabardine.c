@@ -10,8 +10,16 @@
 #include "eic.h"
 #include "tc.h"
 #include "nvmctrl.h"
+#include "midi.h"
 
 #define EIC_KEYCHANGE 5
+
+#define PRESSURE_OCT1 ABP_PA_2_COUNTS(2000)
+#define PRESSURE_OCT2 ABP_PA_2_COUNTS(4000)
+
+#define OCTAVE_OFFSET 4
+
+#define SERCOM_MIDI 1
 
 /*
  * Pin mapping:
@@ -55,6 +63,89 @@ const struct atqt2120_t keys_config = {
     .di = 1
 };
 
+static int keys_to_note(uint8_t keys, unsigned int *octave_modifier)
+{
+    switch(keys)
+    {
+        case 0x00:
+        case 0x40:
+            *octave_modifier = 0;
+            return MIDI_NOTE_A;
+        case 0x01:
+        case 0x41:
+            *octave_modifier = 0;
+            return MIDI_NOTE_G;
+        case 0x02:
+        case 0x06:
+        case 0x42:
+        case 0x46:
+            *octave_modifier = 0;
+            return MIDI_NOTE_GS;
+        case 0x03:
+        case 0x43:
+            *octave_modifier = 0;
+            return MIDI_NOTE_F;
+        case 0x07:
+        case 0x47:
+            *octave_modifier = 0;
+            return MIDI_NOTE_DS;
+        case 0x0f:
+            *octave_modifier = 0;
+            return MIDI_NOTE_D;
+        case 0x1f:
+            *octave_modifier = 0;
+            return MIDI_NOTE_C;
+        case 0x3e:
+        case 0x7e:
+            *octave_modifier = 0;
+            return MIDI_NOTE_AS;
+        case 0x3f:
+            *octave_modifier = -1;
+            return MIDI_NOTE_AS;
+        case 0x7f:
+            *octave_modifier = -1;
+            return MIDI_NOTE_A;
+        default:
+            *octave_modifier = 0;
+            return -1;
+    }
+}
+
+static int note_to_midi_key(int note, unsigned int octave)
+{
+    return MIDI_NOTE_TO_KEY(note, OCTAVE_OFFSET - 1 + octave);
+}
+
+static void replace_note(int note)
+{
+    static int current_note = -1;
+    uint8_t command[7];
+
+    // If nothing to replace... skip
+    if(note == current_note)
+        return;
+
+    uint8_t *ptr;
+    // 1. Mute the former note, if any
+    if(current_note != -1)
+        ptr = midi_note_off(command, 0, current_note, 64);
+    else
+        ptr = command;
+
+    // 2. Play the new note, if any
+    if(note != -1)
+        ptr = midi_note_on(ptr, 0, note, 64);
+
+    // 3. Finalize string
+    *ptr = 0;
+
+    // 4. Send command
+    sercom_usart_puts(SERCOM_MIDI, (char*) command);
+
+    // 5. Update current_note
+    current_note = note;
+}
+
 static void talabardine_init_gpios(void)
 {
     // Codec (SERCOM 0)
@@ -87,13 +178,14 @@ static void talabardine_init_gpios(void)
 
 static void talabardine_init_sercoms(void)
 {
-    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 115200);
+    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 31250);
     sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD312, SPI_IN_PAD0, 800000);
 
     sercom_init_i2c_master(SERCOM_KEYS_CHANNEL, 400000);
 }
 
-static bool t = false;
+static uint8_t keys;
+static uint8_t octave;
 
 void talabardine_init(void)
 {
@@ -111,7 +203,6 @@ void talabardine_init(void)
 
     talabardine_init_gpios();
     talabardine_init_sercoms();
-    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Salut !\r\nJe suis un programme\r\n");
 
     eic_init();
     eic_enable(EIC_KEYCHANGE);
@@ -119,23 +210,12 @@ void talabardine_init(void)
     nvic_enable(NVIC_TC3);
     atqt2120_init(&keys_config);
 
-    gclk_set_frequency(GCLK1, 1024);
-    tc_init(TC3, GCLK1, 1);
+    tc_init(TC3, GCLK0, 1000);
+
+    keys = atqt2120_read_status();
+    octave = 0;
 
     __asm__ __volatile__("cpsie i");
-
-    for(;;)
-    {
-#if 0
-        while(gpio_read(keys_config.change_port, keys_config.change_pin))
-        {
-            uint16_t p = abp_get_pressure();
-            sercom_usart_display_half(p);
-        }
-        uint8_t status = atqt2120_read_status();
-        sercom_usart_display_half(status);
-#endif
-    }
 }
 
 void keychange_handler(void)
@@ -143,18 +223,47 @@ void keychange_handler(void)
     eic_clear(EIC_KEYCHANGE);
     nvic_clear(NVIC_EIC);
 
-    //uint8_t status = atqt2120_read_status();
-    atqt2120_read_status();
-    t = !t;
-    gpio_set_output(GPIO_PORT_B, 7, t);
+    uint8_t new_keys = atqt2120_read_status();
+
+    if(octave > 0) // Was playing
+    {
+        unsigned int octave_modifier;
+        int new_note = keys_to_note(new_keys, &octave_modifier);
+        new_note = note_to_midi_key(new_note, octave + octave_modifier);
+        replace_note(new_note);
+    }
+    keys = new_keys;
 }
 
 void pressure_handler(void)
 {
+    static uint16_t pressure = 0;
+
     tc_clear_interrupt(TC3);
     nvic_clear(NVIC_TC3);
 
-    t = !t;
-    gpio_set_output(GPIO_PORT_B, 7, t);
+    uint16_t new_pressure = abp_wait_until_valid_pressure();
+    if(new_pressure != pressure)
+    {
+        if(new_pressure >= PRESSURE_OCT1)
+        {
+            uint8_t new_octave = (new_pressure >= PRESSURE_OCT2 ? 2 : 1);
+            if(new_octave != octave)
+            {
+                unsigned int octave_modifier;
+                int new_note = keys_to_note(keys, &octave_modifier);
+                new_note = note_to_midi_key(new_note, new_octave + octave_modifier);
+                replace_note(new_note);
+                octave = new_octave;
+            }
+        }
+        else
+        {
+            octave = 0;
+            replace_note(-1);
+        }
+
+        pressure = new_pressure;
+    }
 }
 

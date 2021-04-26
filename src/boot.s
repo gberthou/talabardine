@@ -31,7 +31,7 @@ enddata:
     ;@mov sp, r0
 
     ;@ Squadala!
-    b main
+    bl main
 
 .global done
 done:
