@@ -9,6 +9,8 @@ unsigned int __aeabi_uidivmod(unsigned int numerator, unsigned int denominator)
 unsigned int __aeabi_uidiv(unsigned int numerator, unsigned int denominator)
 {
     unsigned int quot = 0;
+    if(denominator == 1)
+        return numerator;
     for(; numerator >= denominator; ++quot, numerator -= denominator);
     return quot;
 }

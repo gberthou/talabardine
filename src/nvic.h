@@ -14,7 +14,8 @@ struct nvic_t
 
 enum nvic_interrupt_e
 {
-    NVIC_EIC = 4
+    NVIC_EIC = 4,
+    NVIC_TC3 = 18
 };
 
 #define NVIC ((volatile struct nvic_t*) 0xe000e100)

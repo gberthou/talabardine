@@ -13,7 +13,8 @@ NAMES = {
     15: "systick"
 }
 HANDLERS = {
-    4 : "keychange_handler"
+    4  : "keychange_handler",
+    18 : "pressure_handler"
 }
 
 def irq2label(irq):

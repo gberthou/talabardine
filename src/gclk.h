@@ -41,11 +41,40 @@ enum gclk_dst_e
     GCLK_DST_DAC,
     GCLK_DST_PTC,
     GCLK_DST_I2S_0,
-    GCLK_DST_I2S_1,
-    GCLK_DST_TC3
+    GCLK_DST_I2S_1
 };
 
-void gclk_main_48MHz(void);
+enum gclk_channel_e
+{
+    GCLK0 = 0,
+    GCLK1,
+    GCLK2,
+    GCLK3,
+    GCLK4,
+    GCLK5,
+    GCLK6,
+    GCLK7,
+    GCLK8
+};
+
+uint32_t gclk_set_frequency(enum gclk_channel_e channel, uint32_t frequency_hz);
+/*
+ * gclk_set_frequency sets the frequency of the given clock
+ * Returns the actual clock frequency, in Hz, or 0xffffffff if that frequency is
+ * not reachable from that particular channel.
+ * Note that all channels do not have the same resolution (DIVSEL == 0)
+ * 15.8.5:
+ * GCLK1  16bit
+ * GCLK2  5bit
+ * others 8bit
+ */
+
+uint32_t gclk_get_frequency(enum gclk_channel_e channel);
+/*
+ * gclk_get_frequency returns the value returned by gclk_set_frequency for the
+ * given clock (Hz)
+ */
+
 void gclk_connect_clock(enum gclk_dst_e dst, uint8_t gclkid);
 void gclk_disconnect_clock(enum gclk_dst_e dst);
 

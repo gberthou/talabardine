@@ -8,6 +8,8 @@
 #include "abp-spi.h"
 #include "nvic.h"
 #include "eic.h"
+#include "tc.h"
+#include "nvmctrl.h"
 
 #define EIC_KEYCHANGE 5
 
@@ -96,12 +98,16 @@ static bool t = false;
 void talabardine_init(void)
 {
     sysctrl_init_DFLL48M();
-    gclk_main_48MHz();
+
+    // 37.12: NVM needs at least 1 wait state @48MHz when Vcc > 2.7v
+    nvmctrl_set_wait_states(1);
+    gclk_set_frequency(GCLK0, 48000000); // Main clock @48MHz
 
     pm_enable_APB_clock(PM_CLK_SERCOM0, true);
     pm_enable_APB_clock(PM_CLK_SERCOM1, true);
     pm_enable_APB_clock(PM_CLK_SERCOM2, true);
     pm_enable_APB_clock(PM_CLK_SERCOM4, true);
+    pm_enable_APB_clock(PM_CLK_TC3, true);
 
     talabardine_init_gpios();
     talabardine_init_sercoms();
@@ -110,8 +116,14 @@ void talabardine_init(void)
     eic_init();
     eic_enable(EIC_KEYCHANGE);
     nvic_enable(NVIC_EIC);
-    __asm__ __volatile__("cpsie i");
+    nvic_enable(NVIC_TC3);
     atqt2120_init(&keys_config);
+
+    gclk_set_frequency(GCLK1, 1024);
+    tc_init(TC3, GCLK1, 1);
+
+    __asm__ __volatile__("cpsie i");
+
     for(;;)
     {
 #if 0
@@ -133,6 +145,15 @@ void keychange_handler(void)
 
     //uint8_t status = atqt2120_read_status();
     atqt2120_read_status();
+    t = !t;
+    gpio_set_output(GPIO_PORT_B, 7, t);
+}
+
+void pressure_handler(void)
+{
+    tc_clear_interrupt(TC3);
+    nvic_clear(NVIC_TC3);
+
     t = !t;
     gpio_set_output(GPIO_PORT_B, 7, t);
 }
