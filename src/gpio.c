@@ -87,6 +87,16 @@ void gpio_set_output(enum gpio_port_e port, uint8_t pin, bool high)
         p->outclr = mask;
 }
 
+void gpio_enable_pull(enum gpio_port_e port, uint8_t pin, bool up)
+{
+    pin &= 0x1f;
+
+    volatile struct gpio_t *p = PORT(port);
+    p->pincfg[pin] |=  (1 << 2); // PULLEN
+
+    gpio_set_output(port, pin, up);
+}
+
 bool gpio_read(enum gpio_port_e port, uint8_t pin)
 {
     pin &= 0x1f;

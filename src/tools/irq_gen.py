@@ -14,6 +14,7 @@ NAMES = {
 }
 HANDLERS = {
     4  : "keychange_handler",
+    7  : "usb_handler",
     18 : "pressure_handler"
 }
 

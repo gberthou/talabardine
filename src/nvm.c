@@ -21,9 +21,14 @@ uint32_t nvm_get_calibration_bits(enum nvm_calibration_e cal)
 {
     switch(cal)
     {
+        case NVM_CAL_USBTRANSN:
+            return nvm_get_bits(45, 49);
+        case NVM_CAL_USBTRANSP:
+            return nvm_get_bits(50, 54);
+        case NVM_CAL_USBTRIM:
+            return nvm_get_bits(55, 57);
         case NVM_CAL_DFLL48MCOARSE:
             return nvm_get_bits(58, 63);
-
         default:
             return 0xdeadbeef;
     }

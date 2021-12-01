@@ -15,6 +15,7 @@ struct nvic_t
 enum nvic_interrupt_e
 {
     NVIC_EIC = 4,
+    NVIC_USB = 7,
     NVIC_TC3 = 18
 };
 

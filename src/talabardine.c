@@ -11,6 +11,8 @@
 #include "tc.h"
 #include "nvmctrl.h"
 #include "midi.h"
+#include "udc.h"
+#include "usb.h"
 
 #define EIC_KEYCHANGE 5
 
@@ -174,11 +176,20 @@ static void talabardine_init_gpios(void)
     // LED
     gpio_configure_io(GPIO_PORT_B, 7, true);
     gpio_set_output(GPIO_PORT_B, 7, false);
+
+    // Button
+    gpio_configure_io(GPIO_PORT_A, 8, false);
+    gpio_enable_pull(GPIO_PORT_A, 8, true);
+
+    // USB
+    gpio_configure_function(GPIO_PORT_A, 24, GPIO_FUNC_G);
+    gpio_configure_function(GPIO_PORT_A, 25, GPIO_FUNC_G);
 }
 
 static void talabardine_init_sercoms(void)
 {
-    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 31250);
+    //sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 31250);
+    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 115200);
     sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD312, SPI_IN_PAD0, 800000);
 
     sercom_init_i2c_master(SERCOM_KEYS_CHANNEL, 400000);
@@ -204,18 +215,25 @@ void talabardine_init(void)
     talabardine_init_gpios();
     talabardine_init_sercoms();
 
-    eic_init();
-    eic_enable(EIC_KEYCHANGE);
-    nvic_enable(NVIC_EIC);
-    nvic_enable(NVIC_TC3);
-    atqt2120_init(&keys_config);
+    //eic_init();
+    //eic_enable(EIC_KEYCHANGE);
+    //nvic_enable(NVIC_EIC);
+    //nvic_enable(NVIC_TC3);
 
-    tc_init(TC3, GCLK0, 1000);
+    //atqt2120_init(&keys_config);
 
-    keys = atqt2120_read_status();
+    //tc_init(TC3, GCLK0, 1000);
+
+    //keys = atqt2120_read_status();
     octave = 0;
 
+    gclk_set_frequency(GCLK1, 48000000);
+    udc_init();
+
+    nvic_enable(NVIC_USB);
     __asm__ __volatile__("cpsie i");
+
+    udc_attach();
 }
 
 void keychange_handler(void)

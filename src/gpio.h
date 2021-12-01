@@ -26,6 +26,7 @@ enum gpio_function_e
 void gpio_configure_function(enum gpio_port_e port, uint8_t pin, enum gpio_function_e function);
 void gpio_configure_io(enum gpio_port_e port, uint8_t pin, bool output);
 void gpio_set_output(enum gpio_port_e port, uint8_t pin, bool high);
+void gpio_enable_pull(enum gpio_port_e port, uint8_t pin, bool up);
 bool gpio_read(enum gpio_port_e port, uint8_t pin);
 
 #endif
