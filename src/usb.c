@@ -97,6 +97,70 @@ struct __attribute__((packed, aligned(4))) \
     .bString = s \
 }
 
+struct __attribute__((packed)) cs_ac_interface_descriptor_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint16_t bcdADC;
+    uint16_t wTotalLength;
+    uint8_t bInCollection;
+    uint8_t baInterfaceNr;
+};
+
+struct __attribute__((packed)) cs_ms_interface_descriptor_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint16_t bcdMSC;
+    uint16_t wTotalLength;
+};
+
+struct __attribute__((packed)) cs_ms_midi_in_descriptor_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bJackType;
+    uint8_t bJackID;
+    uint8_t iJack;
+};
+
+struct __attribute__((packed)) cs_ms_midi_out_endpoint_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bJackType;
+    uint8_t bJackID;
+    uint8_t bNrInputPins;
+    uint8_t baSourceID;
+    uint8_t baSourcePin;
+    uint8_t iJack;
+};
+
+struct __attribute__((packed)) bulk_endpoint_descriptor_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bEndpointAddress;
+    uint8_t bmAttributes;
+    uint16_t wMaxPacketSize;
+    uint8_t bInterval;
+    uint8_t bRefresh;
+    uint8_t bSynchAddress;
+};
+
+struct __attribute__((packed)) cs_ms_bulk_endpoint_descriptor_t
+{
+    uint8_t bLength;
+    uint8_t bDescriptorType;
+    uint8_t bDescriptorSubtype;
+    uint8_t bNumEmbMIDIJack;
+    uint8_t baAssocJackID;
+};
+
 const struct usb_device_descriptor_t __attribute__((aligned(4))) TALABARDINE_USB_DESCRIPTOR = {
     .bLength = 18,
     .bDescriptorType = 0x01, // Device descriptor
@@ -116,13 +180,25 @@ const struct usb_device_descriptor_t __attribute__((aligned(4))) TALABARDINE_USB
 const struct __attribute__((packed, aligned(4)))
 {
     struct usb_configuration_descriptor_t configuration;
-    struct usb_interface_descriptor_t interfaces[2];
-    struct usb_endpoint_descriptor_t endpoints[2];
+
+    struct usb_interface_descriptor_t midi1_interface;
+    struct cs_ac_interface_descriptor_t ac_interface;
+
+    struct usb_interface_descriptor_t midi2_interface;
+    struct cs_ms_interface_descriptor_t ms_interface;
+    struct cs_ms_midi_in_descriptor_t midi_in_interfaces[2];
+    struct cs_ms_midi_out_endpoint_t midi_out_interface_0;
+    struct cs_ms_midi_out_endpoint_t midi_out_interface_1;
+    struct bulk_endpoint_descriptor_t midi_bulk_in;
+    struct cs_ms_bulk_endpoint_descriptor_t midi_cs_bulk_in;
+    struct bulk_endpoint_descriptor_t midi_bulk_out;
+    struct cs_ms_bulk_endpoint_descriptor_t midi_cs_bulk_out;
+
 } TALABARDINE_CONFIG0_DESCRIPTOR = {
     .configuration = {
         .bLength = 9,
         .bDescriptorType = 0x02, // Configuration Descriptor
-        .wTotalLength = 41,
+        .wTotalLength = 101,
         .bNumInterfaces = 2,
         .bConfigurationValue = 1,
         .iConfiguration = 0,
@@ -130,7 +206,7 @@ const struct __attribute__((packed, aligned(4)))
         .bMaxPower = 50 // 100 mA max.
     },
 
-    .interfaces[0] = { // Standard AC interface descriptor
+    .midi1_interface = { // Standard AC interface descriptor
         .bLength = 9,
         .bDescriptorType = 0x04, // Interface Descriptor
         .bInterfaceNumber = 0,
@@ -141,7 +217,17 @@ const struct __attribute__((packed, aligned(4)))
         .bInterfaceProtocol = 0, // Unused
         .iInterface = 0
     },
-    .interfaces[1] = { // Standard MIDIStreaming descriptor
+    .ac_interface = {
+        .bLength = 9,
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x01, // HEADER
+        .bcdADC = 0x0100, // Audio 1.0
+        .wTotalLength = 9,
+        .bInCollection = 1, // 1 streaming interface
+        .baInterfaceNr = 1
+    },
+
+    .midi2_interface = { // Standard MIDIStreaming descriptor
         .bLength = 9,
         .bDescriptorType = 0x04, // Interface Descriptor
         .bInterfaceNumber = 1,
@@ -152,22 +238,84 @@ const struct __attribute__((packed, aligned(4)))
         .bInterfaceProtocol = 0,
         .iInterface = 0
     },
-
-    .endpoints[0] = {
+    .ms_interface = {
         .bLength = 7,
-        .bDescriptorType = 0x05, // Endpoint Descriptor
-        .bEndpointAddress = 0x01, // Endpoint 1 OUT
-        .bmAttributes = 0x03, // Interrupt
-        .wMaxPacketSize = 64,
-        .bInterval = 1
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x01, // MS_HEADER
+        .bcdMSC = 0x0100,
+        .wTotalLength = 65
     },
-    .endpoints[1] = {
-        .bLength = 7,
-        .bDescriptorType = 0x05, // Endpoint Descriptor
-        .bEndpointAddress = 0x81, // Endpoint 1 IN
-        .bmAttributes = 0x03, // Interrupt
+    .midi_in_interfaces[0] = {
+        .bLength = 6,
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x02, // MIDI_IN_JACK
+        .bJackType = 0x1, // EMBEDDED
+        .bJackID = 0x1,
+        .iJack = 0x0
+    },
+    .midi_in_interfaces[1] = {
+        .bLength = 6,
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x02, // MIDI_IN_JACK
+        .bJackType = 0x2, // EXTERNAL
+        .bJackID = 0x2,
+        .iJack = 0x0
+    },
+    .midi_out_interface_0 = {
+        .bLength = 9,
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x03, // MIDI_OUT_JACK
+        .bJackType = 0x1, // EMBEDDED
+        .bJackID = 0x3,
+        .bNrInputPins = 1, // One input pin
+        .baSourceID = 0x2,
+        .baSourcePin = 0x1,
+        .iJack = 0
+    },
+    .midi_out_interface_1 = {
+        .bLength = 9,
+        .bDescriptorType = 0x24, // CS_INTERFACE
+        .bDescriptorSubtype = 0x03, // MIDI_OUT_JACK
+        .bJackType = 0x2, // EXTERNAL
+        .bJackID = 0x4,
+        .bNrInputPins = 1, // One input pin
+        .baSourceID = 0x1,
+        .baSourcePin = 0x1,
+        .iJack = 0
+    },
+    .midi_bulk_in = {
+        .bLength = 9,
+        .bDescriptorType = 0x5, // ENDPOINT descriptor
+        .bEndpointAddress = 0x81, // IN 1
+        .bmAttributes = 0x2, // Bulk, not shared
         .wMaxPacketSize = 64,
-        .bInterval = 1
+        .bInterval = 0,
+        .bRefresh = 0,
+        .bSynchAddress = 0
+    },
+    .midi_cs_bulk_in = {
+        .bLength = 5,
+        .bDescriptorType = 0x25, // CS_ENDPOINT
+        .bDescriptorSubtype = 0x1, // MS_GENERAL
+        .bNumEmbMIDIJack = 0x1,
+        .baAssocJackID = 0x3
+    },
+    .midi_bulk_out = {
+        .bLength = 9,
+        .bDescriptorType = 0x5, // ENDPOINT descriptor
+        .bEndpointAddress = 0x01, // OUT 1
+        .bmAttributes = 0x2, // Bulk, not shared
+        .wMaxPacketSize = 64,
+        .bInterval = 0,
+        .bRefresh = 0,
+        .bSynchAddress = 0
+    },
+    .midi_cs_bulk_out = {
+        .bLength = 5,
+        .bDescriptorType = 0x25, // CS_ENDPOINT
+        .bDescriptorSubtype = 0x1, // MS_GENERAL
+        .bNumEmbMIDIJack = 0x1,
+        .baAssocJackID = 0x1
     }
 };
 const struct __attribute__((aligned(4))) usb_qualifier_descriptor_t TALABARDINE_QUALIFIER_DESCRIPTOR = {
@@ -312,6 +460,7 @@ void usb_setup_packet(const void *_buf)
                     for(ptr += ptr[0]; ptr < end; ptr += ptr[0])
                         if(ptr[1] == 0x04) // Interface descriptor
                             udc_endpoint_configure((void*)ptr);
+                    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "C\r\n");
                 }
                 break;
             }

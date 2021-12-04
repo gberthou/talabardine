@@ -12,7 +12,7 @@
 // https://github.com/ataradov/dgw/blob/master/embedded/udc.c
 // https://www.beyondlogic.org/usbnutshell/usb4.shtml
 // -> control buffers <= 64 bytes
-#define EP_BUFFER_SIZE 64
+#define EP_BUFFER_SIZE 128
 
 #define USB ((volatile struct usb_device_t*) 0x41005000)
 #define _ENDPOINT0 (0x41005100)
@@ -166,6 +166,7 @@ void udc_endpoint_configure(const struct usb_endpoint_descriptor_t *descriptor)
     size_t log2_size = 0;
     for(size >>= 3; size && log2_size <= 7; ++log2_size, size >>= 1);
     descriptors[ep].banks[directionIn ? 1 : 0].pcksize = (log2_size << 28);
+    descriptors[ep].banks[directionIn ? 1 : 0].addr = (uint32_t) (directionIn ? &buf1[0] : &buf0[0]);
 
     if(directionIn)
     {
@@ -279,17 +280,6 @@ void udc_tx(uint8_t ep, const void *data, size_t size)
     uint32_t pcksize = (0x3 << 28) // 64 bytes per packet
                      | (size)
                      ;
-#if 0
-    if(size > 64)
-    {
-        size_t q = (size >> 6);
-        size_t r = size - (q << 6);
-        q += (r != 0 ? 1 : 0);
-        size_t x = (q << 6);
-
-        pcksize |= (x << 14); // MUTI_PACKET_SIZE
-    }
-#endif
     descriptors[ep].banks[1].pcksize = pcksize;
 
     endpoint->epintflag = EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1;
