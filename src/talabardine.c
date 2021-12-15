@@ -8,11 +8,14 @@
 #include "abp-spi.h"
 #include "nvic.h"
 #include "eic.h"
+#include "interrupt.h"
 #include "tc.h"
 #include "nvmctrl.h"
 #include "midi.h"
 #include "udc.h"
 #include "usb.h"
+#include "usb_midi.h"
+#include "usb_talabardine.h"
 
 #define EIC_KEYCHANGE 5
 
@@ -130,19 +133,26 @@ static void replace_note(int note)
     uint8_t *ptr;
     // 1. Mute the former note, if any
     if(current_note != -1)
+    {
         ptr = midi_note_off(command, 0, current_note, 64);
+        usb_midi_note_off(0, note, 64);
+    }
     else
         ptr = command;
 
     // 2. Play the new note, if any
     if(note != -1)
+    {
         ptr = midi_note_on(ptr, 0, note, 64);
+        usb_midi_note_on(0, note, 64);
+    }
 
     // 3. Finalize string
     *ptr = 0;
 
     // 4. Send command
-    sercom_usart_puts(SERCOM_MIDI, (char*) command);
+    //sercom_usart_puts(SERCOM_MIDI, (char*) command);
+    //usb_midi_bulk(command, ptr + 1 - command);
 
     // 5. Update current_note
     current_note = note;
@@ -205,6 +215,7 @@ void talabardine_init(void)
     // 37.12: NVM needs at least 1 wait state @48MHz when Vcc > 2.7v
     nvmctrl_set_wait_states(1);
     gclk_set_frequency(GCLK0, 48000000); // Main clock @48MHz
+    gclk_set_frequency(GCLK1, 48000000);
 
     pm_enable_APB_clock(PM_CLK_SERCOM0, true);
     pm_enable_APB_clock(PM_CLK_SERCOM1, true);
@@ -227,13 +238,17 @@ void talabardine_init(void)
     //keys = atqt2120_read_status();
     octave = 0;
 
-    gclk_set_frequency(GCLK1, 48000000);
-    udc_init();
-
+    usb_talabardine_init();
     nvic_enable(NVIC_USB);
-    __asm__ __volatile__("cpsie i");
+    interrupt_enable();
 
-    udc_attach();
+    int note = MIDI_NOTE_A;
+    octave = 1;
+    do
+    {
+        replace_note(note++);
+        for(size_t i = 0; i < 1000000; ++i);
+    } while(1);
 }
 
 void keychange_handler(void)

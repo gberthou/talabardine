@@ -8,6 +8,7 @@
 #include "nvm.h"
 #include "sercom.h"
 #include "config.h"
+#include "utils.h"
 
 // https://github.com/ataradov/dgw/blob/master/embedded/udc.c
 // https://www.beyondlogic.org/usbnutshell/usb4.shtml
@@ -30,7 +31,7 @@
 #define INTFLAG_SOF (1 << 2)
 #define INTFLAG_EORST (1 << 3)
 #define INTFLAG_WAKEUP (1 << 4)
-#define DBG_INTFLAG_ALL 0x03fd
+#define INTFLAG_EORSM (1 << 5)
 
 #define EPINTFLAG_TRCPT0  (1 << 0)
 #define EPINTFLAG_TRCPT1  (1 << 1)
@@ -39,7 +40,6 @@
 #define EPINTFLAG_RXSTP   (1 << 4)
 #define EPINTFLAG_STALL0  (1 << 5)
 #define EPINTFLAG_STALL1  (1 << 6)
-#define DBG_EPINTFLAG_ALL 0x7f
 
 #define EPSTATUS_DTGLOUT (1 << 0)
 #define EPSTATUS_DTGLIN (1 << 1)
@@ -108,22 +108,48 @@ struct __attribute__((packed)) usb_descriptor_t
     struct usb_device_bank_t banks[2];
 };
 
-static struct usb_descriptor_t __attribute__((aligned(4))) descriptors[NENDPOINTS];
-static uint8_t __attribute__((aligned(4))) buf0[EP_BUFFER_SIZE];
-static uint8_t __attribute__((aligned(4))) buf1[EP_BUFFER_SIZE];
-static uint8_t last_address;
+static volatile struct usb_descriptor_t __attribute__((aligned(4))) descriptors[NENDPOINTS];
+static volatile uint8_t __attribute__((aligned(4))) buf0[EP_BUFFER_SIZE];
+static volatile uint8_t __attribute__((aligned(4))) buf1[EP_BUFFER_SIZE];
 
-enum endpoint_direction_e
+static struct
 {
-    ENDPOINT_OUT,
-    ENDPOINT_IN
-};
+    void (*receive_callbacks[NENDPOINTS-1])(void);
+    bool pending_tx[NENDPOINTS-1];
+    
+    uint8_t last_address;
+    bool suspended;
+    struct udc_control_callback pending_control;
+} context;
 
 static void endpoint_reset(uint8_t ep, enum endpoint_direction_e direction)
 {
     volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
-    uint8_t mask = (direction == ENDPOINT_OUT ? 0xf8 : 0x8f);
-    endpoint->epcfg &= mask;
+    endpoint->epcfg &= (direction == ENDPOINT_OUT ? 0xf8 : 0x8f);
+    endpoint->epintenclr = (direction == ENDPOINT_OUT ? 0x35 : 0x5a);
+    endpoint->epintflag = (direction == ENDPOINT_OUT ? 0x35 : 0x5a);
+    endpoint->epstatusclr = (direction == ENDPOINT_OUT ? 0x55: 0xa2);
+}
+
+/*
+static uint8_t busy_wait_for_ep(uint8_t ep, uint8_t epintmask)
+{
+    volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+    uint8_t ret;
+    endpoint->epintflag = epintmask;
+    endpoint->epintenclr = epintmask;
+    while(!(ret = (endpoint->epintflag & epintmask)));
+    
+    endpoint->epintflag = ret;
+    return ret;
+}
+*/
+
+static void async_wait_for_ep(uint8_t ep, uint8_t epintmask)
+{
+    volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+    endpoint->epintflag = epintmask;
+    endpoint->epintenset = epintmask;
 }
 
 static void udc_reset(void)
@@ -131,6 +157,9 @@ static void udc_reset(void)
     volatile struct usb_device_endpoint_register_t *endpoint0 = ENDPOINT(0);
 
     udc_endpoint_unconfigure();
+    
+    context.suspended = false;
+    context.pending_control.type = UDC_CONTROL_NONE;
 
     endpoint0->epcfg = 0x11; // Control OUT, Control OUT
     descriptors[0].banks[0].addr = (uint32_t) &buf0[0];
@@ -140,12 +169,11 @@ static void udc_reset(void)
     descriptors[0].banks[1].pcksize = (0x3 << 28); // 64 bytes
 
     USB->dadd = (1 << 7) // ADDEN
-              | last_address
+              | context.last_address
               ;
 
-    endpoint0->epintflag = EPINTFLAG_RXSTP;
-    endpoint0->epstatusset = EPSTATUS_BK0RDY;
-    endpoint0->epintenset = EPINTFLAG_RXSTP;
+    endpoint0->epstatusclr = EPSTATUS_DTGLOUT | EPSTATUS_DTGLIN | EPSTATUS_BK0RDY |EPSTATUS_BK1RDY;
+    async_wait_for_ep(0, EPINTFLAG_RXSTP);
 }
 
 void udc_endpoint_configure(const struct usb_endpoint_descriptor_t *descriptor)
@@ -153,8 +181,15 @@ void udc_endpoint_configure(const struct usb_endpoint_descriptor_t *descriptor)
     uint8_t ep = (descriptor->bEndpointAddress & 0x7f);
     uint8_t directionIn = (descriptor->bEndpointAddress & 0x80);
     uint8_t transferType = (descriptor->bmAttributes & 0x3);
-    uint16_t size = (descriptor->wMaxPacketSize & 0x03ff);
     volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+
+    // wMaxPacketSize might be misaligned
+    const uint8_t *psize = (const uint8_t*) &descriptor->wMaxPacketSize;
+    uint16_t size_l = psize[0];
+    uint16_t size_h = (psize[1] & 0x03);
+    uint16_t size = size_l | (size_h << 8);
+    
+    endpoint_reset(ep, directionIn);
 
     // Configure endpoint transfer type
     uint8_t epcfg = endpoint->epcfg;
@@ -162,23 +197,33 @@ void udc_endpoint_configure(const struct usb_endpoint_descriptor_t *descriptor)
     epcfg |= ((transferType + 1) << (directionIn ? 4 : 0));
     endpoint->epcfg = epcfg;
 
-    // Compute driver's packet size
-    size_t log2_size = 0;
-    for(size >>= 3; size && log2_size <= 7; ++log2_size, size >>= 1);
-    descriptors[ep].banks[directionIn ? 1 : 0].pcksize = (log2_size << 28);
-    descriptors[ep].banks[directionIn ? 1 : 0].addr = (uint32_t) (directionIn ? &buf1[0] : &buf0[0]);
+    if(!directionIn)
+    {
+        // Compute driver's packet size
+        size_t log2_size = 0;
+        for(size_t s = (size >> 3); s && log2_size <= 7; ++log2_size, s >>= 1);
+        --log2_size;
+        uint32_t pcksize = (log2_size << 28);
+        
+        descriptors[ep].banks[0].pcksize = pcksize | size;
+        endpoint->epstatusclr = EPSTATUS_BK0RDY;
+        async_wait_for_ep(ep, EPINTFLAG_TRCPT0 | EPINTFLAG_TRFAIL0);
+    }
+    // If direction IN, do nothing
+}
 
-    if(directionIn)
-    {
-        endpoint->epintenset = EPINTFLAG_TRCPT1;
-        endpoint->epstatusclr = EPSTATUS_BK1RDY | EPSTATUS_DTGLIN;
-    }
-    else
-    {
-        endpoint->epintenset = EPINTFLAG_TRCPT0;
-        endpoint->epstatusclr = EPSTATUS_DTGLOUT;
-        endpoint->epstatusset = EPSTATUS_BK0RDY;
-    }
+void udc_dump_endpoint(uint8_t ep)
+{
+    volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\nFSMSTATE: ");
+    dump((void*)&USB->fsmstatus, 1);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\nEndpoint ");
+    dump(&ep, 1);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, ":\r\n");
+    dump((void*)endpoint, 10);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\nDesc:\r\n");
+    dump((void*)&descriptors[ep], sizeof(descriptors[0]));
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
 }
 
 void udc_endpoint_unconfigure(void)
@@ -190,14 +235,36 @@ void udc_endpoint_unconfigure(void)
     }
 }
 
+void udc_endpoint_set_buffer(uint8_t ep, enum endpoint_direction_e direction, volatile void *buffer)
+{
+    descriptors[ep].banks[direction].addr = (uint32_t) buffer;
+}
+
 void udc_attach(void)
 {
     USB->ctrlb &= ~CTRLB_DETACH;
 }
 
+/*
+static void udc_detach(void)
+{
+    USB->ctrlb |= CTRLB_DETACH;
+}
+*/
+
+bool udc_is_attached(void)
+{
+    return (USB->ctrlb & CTRLB_DETACH) == 0;
+}
+
 void udc_init(void)
 {
-    memset(descriptors, 0, sizeof(descriptors));
+#if 0
+    memset((void*)descriptors, 0, sizeof(descriptors));
+#else
+    volatile uint8_t *end = ((uint8_t*)descriptors) + sizeof(descriptors);
+    for(volatile uint8_t *ptr = (uint8_t*)descriptors; ptr < end; *ptr++ = 0);
+#endif
 
     // 48MHz
     gclk_connect_clock(GCLK_DST_USB, 0);
@@ -222,121 +289,114 @@ void udc_init(void)
                 ;
     USB->descadd = (uint32_t) descriptors;
     USB->dadd = 0;
-    last_address = 0;
+    context.last_address = 0;
     udc_reset();
 
-    USB->intflag = INTFLAG_EORST | INTFLAG_WAKEUP;
-#if 0
-    USB->intenset = INTFLAG_EORST | INTFLAG_WAKEUP;
-#else
-    USB->intenset = DBG_INTFLAG_ALL;
-#endif
-}
-
-static void dump(const void *_src, size_t size)
-{
-    const unsigned char *src = _src;
-    for(size_t j = 0; j < size; ++j)
-    {
-        unsigned char c = *src++;
-        char repr[2];
-        for(size_t i = 0; i < 2; ++i)
-        {
-            unsigned char tmp = (c & 0xf);
-            if(tmp < 10)
-                tmp += '0';
-            else
-                tmp += 'a' - 10;
-            repr[i^1] = tmp;
-            c >>= 4;
-        }
-        sercom_usart_putc(SERCOM_MIDI_CHANNEL, repr[0]); 
-        sercom_usart_putc(SERCOM_MIDI_CHANNEL, repr[1]); 
-        if((j & 7) != 7)
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, ' '); 
-        else
-        {
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, '\r'); 
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, '\n'); 
-        }
-    }
+    USB->intflag = INTFLAG_EORST;
+    USB->intenset = INTFLAG_EORST;
 }
 
 void udc_tx(uint8_t ep, const void *data, size_t size)
 {
     volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+    volatile struct usb_device_bank_t *bank = &descriptors[ep].banks[1];
 
-    uint8_t *dst = buf1;
     if(data == NULL)
         size = 0;
-#if 1
-    const uint8_t *src = data;
-    for(size_t n = size; n--;)
-        *dst++ = *src++;
-#else
-    // TODO: Make this work
-    descriptors[ep].banks[1].addr = (uint32_t) data;
-#endif
-    uint32_t pcksize = (0x3 << 28) // 64 bytes per packet
-                     | (size)
-                     ;
-    descriptors[ep].banks[1].pcksize = pcksize;
-
-    endpoint->epintflag = EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1;
+    else if(data >= (const void*) 0x20000000 && data < (const void*) 0x20004000 && (((uint32_t) data) & 0x3) == 0)
+        bank->addr = (uint32_t) data;
+    else
 #if 0
-    endpoint0->epintenset = EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1;
+    {
+        volatile void *dst = buf1;
+        memcpy(dst, data, size);
+    }
 #else
-    endpoint->epintenset = DBG_EPINTFLAG_ALL;
+    {
+        volatile uint8_t *dst = buf1;
+        const uint8_t *ptr = data;
+        size_t s = size;
+        while(s--)
+            *dst++ = *ptr++;
+        bank->addr = (uint32_t) buf1;
+    }
 #endif
+    uint32_t pcksize = bank->pcksize;
+    pcksize &= 0xffffc000;
+    if(size == 0)
+        pcksize |= (1 << 31);
+    else
+        pcksize |= size;
+    bank->pcksize = pcksize;
+    
+    if(ep == 0)
+        async_wait_for_ep(ep, EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1);
+    else
+    {
+        context.pending_tx[ep-1] = true;
+        async_wait_for_ep(ep, EPINTFLAG_TRCPT1);
+    }
     endpoint->epstatusset = EPSTATUS_BK1RDY;
 }
 
-void udc_control_send(void)
+void udc_busy_wait_tx_free(uint8_t ep)
+{
+    if(ep)
+    {
+        volatile bool *ptr = &context.pending_tx[ep - 1];
+        while(*ptr);
+    }
+}
+
+void udc_control_send(const struct udc_control_callback *cb)
 {
     volatile struct usb_device_endpoint_register_t *endpoint0 = ENDPOINT(0);
+    context.pending_control = *cb;
     descriptors[0].banks[1].pcksize = (0x3 << 28)
                                     | (1 << 31) // AUTO_ZLP
                                     ;
-    endpoint0->epintflag = EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1;
-#if 0
-    endpoint0->epintenset = EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1;
-#else
-    endpoint0->epintenset = DBG_EPINTFLAG_ALL;
-#endif
     endpoint0->epstatusset = EPSTATUS_BK1RDY;
-
-    while(!(endpoint0->epintflag & EPINTFLAG_TRCPT1));
+    async_wait_for_ep(0, EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1);
 }
 
-#if 0
-void usb_rx(size_t size)
+/*
+void usb_rx(uint8_t ep, size_t size)
 {
-    volatile struct usb_device_endpoint_register_t *endpoint0 = ENDPOINT(0);
-    descriptors[0].banks[0].pcksize = (0x3 << 28)
-                                    | (size) // MULTI_PACKET_SIZE
+    volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(ep);
+    descriptors[ep].banks[0].pcksize = (0x3 << 28)
+                                    | (size)
                                     ;
 
-    endpoint0->epintflag = EPINTFLAG_TRCPT0 | EPINTFLAG_TRFAIL0;
-#if 0
-    endpoint0->epintenset = EPINTFLAG_TRCPT0;
-#else
-    endpoint0->epintenset = DBG_EPINTFLAG_ALL;
-#endif
-    //endpoint0->epstatusset = EPSTATUS_BK0RDY;
+    endpoint->epstatusset = EPSTATUS_BK0RDY;
+    endpoint->epstatusclr = EPSTATUS_DTGLOUT;
+    busy_wait_for_ep(0, EPINTFLAG_TRCPT0 | EPINTFLAG_TRFAIL0);
 }
-#endif
+*/
 
 void udc_set_address(uint8_t address)
 {
-    last_address = address & 0x7f;
+    context.last_address = address & 0x7f;
     USB->dadd = (1 << 7) // ADDEN
-              | last_address
+              | context.last_address
               ;
 }
 
-void udc_stall(void)
+void udc_stall(uint8_t ep)
 {
-    ENDPOINT(0)->epstatusset = EPSTATUS_STALLRQ1;
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Stalling...\r\n"); 
+    ENDPOINT(ep)->epstatusset = EPSTATUS_STALLRQ1;
+}
+
+void udc_set_receive_callback(uint8_t ep, void (*callback)(void))
+{
+    if(ep < 1)
+        return;
+    context.receive_callbacks[ep - 1] = callback;
+}
+
+bool udc_is_suspended(void)
+{
+    return context.suspended;
 }
 
 void usb_handler(void)
@@ -344,23 +404,22 @@ void usb_handler(void)
     uint16_t intflag = USB->intflag;
     uint16_t summary = USB->epintsmry;
     
-    //dump(&intflag, 2);
-    //dump(&summary, 2);
-
-    USB->intflag = INTFLAG_SOF;
     if(intflag & INTFLAG_SUSPEND)
+    {
+        context.suspended = true;
         USB->intflag = INTFLAG_SUSPEND;
-    if(intflag & INTFLAG_WAKEUP)
-        USB->intflag = INTFLAG_WAKEUP;
+    }
+    if(intflag & (INTFLAG_WAKEUP | INTFLAG_EORSM))
+    {
+        context.suspended = false;
+        USB->intflag = INTFLAG_WAKEUP | INTFLAG_EORSM;
+    }
     if(intflag & INTFLAG_EORST)
     {
         udc_reset();
         USB->intflag = INTFLAG_EORST;
-        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\nR@"); 
-        uint8_t tmp = USB->dadd;
-        dump(&tmp, sizeof(tmp));
     }
-    if(intflag & ~(INTFLAG_SUSPEND | INTFLAG_WAKEUP | INTFLAG_EORST | INTFLAG_SOF))
+    if(intflag & ~(INTFLAG_SUSPEND | INTFLAG_WAKEUP | INTFLAG_EORST | INTFLAG_SOF | INTFLAG_EORSM))
     {
         sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unsupported INTFLAG: "); 
         dump(&intflag, sizeof(intflag));
@@ -370,48 +429,64 @@ void usb_handler(void)
     {
         if(!(summary & 1))
             continue;
-        if(i != 0)
-        {
-            uint8_t a=i;
-            dump(&a, sizeof(a));
-        }
         volatile struct usb_device_endpoint_register_t *endpoint = ENDPOINT(i);
         uint8_t epintflag = endpoint->epintflag;
 
-        if(epintflag & EPINTFLAG_RXSTP)
+        if(i == 0)
         {
-            endpoint->epintflag = EPINTFLAG_RXSTP;
-            usb_setup_packet(buf0);
-            endpoint->epstatusclr = EPSTATUS_BK0RDY;
+            if(epintflag & EPINTFLAG_RXSTP)
+            {
+                usb_setup_packet(buf0);
+                endpoint->epstatusclr = EPSTATUS_BK0RDY;
+                endpoint->epintflag = EPINTFLAG_RXSTP;
+            }
+            if(epintflag & EPINTFLAG_TRCPT1)
+            {
+                if(context.pending_control.type != UDC_CONTROL_NONE)
+                    context.pending_control.callback(&context.pending_control);
+                context.pending_control.type = UDC_CONTROL_NONE;
+                endpoint->epstatusclr = EPSTATUS_BK1RDY;
+                endpoint->epintflag = EPINTFLAG_TRCPT1;
+            }
         }
-        if(epintflag & EPINTFLAG_TRCPT0)
+        else
         {
-            endpoint->epintflag = EPINTFLAG_TRCPT0;
-            endpoint->epstatusset = EPSTATUS_BK0RDY;
-        }
+            if(epintflag & EPINTFLAG_TRCPT0)
+            {
+                void (*f)(void) = context.receive_callbacks[i-1];
+                if(f)
+                    f();
+            
+                endpoint->epstatusclr = EPSTATUS_BK0RDY;
+                endpoint->epintflag = EPINTFLAG_TRCPT0;
+            }
         
-        if(epintflag & EPINTFLAG_TRCPT1)
-        {
-            endpoint->epintflag = EPINTFLAG_TRCPT1;
-            endpoint->epstatusclr = EPSTATUS_BK1RDY;
-        }
-        if(epintflag & EPINTFLAG_TRFAIL0)
-        {
-            sercom_usart_puts(SERCOM_MIDI_CHANNEL, "TRFAIL0");
-            USB->ctrlb = CTRLB_DETACH;
-            endpoint->epintflag = EPINTFLAG_TRFAIL0;
-        }
-        if(epintflag & EPINTFLAG_TRFAIL1)
-        {
-            sercom_usart_puts(SERCOM_MIDI_CHANNEL, "TRFAIL1");
-            USB->ctrlb = CTRLB_DETACH;
-            endpoint->epintflag = EPINTFLAG_TRFAIL1;
-        }
+            if(epintflag & EPINTFLAG_TRCPT1)
+            {
+                context.pending_tx[i-1] = false;
+                endpoint->epintflag = EPINTFLAG_TRCPT1;
+            }
+            if(epintflag & EPINTFLAG_TRFAIL0)
+            {
+                endpoint->epintflag = EPINTFLAG_TRFAIL0;
+            }
+            if(epintflag & EPINTFLAG_STALL1)
+            {
+                udc_dump_endpoint(i);
+                endpoint->epstatusset = EPSTATUS_STALLRQ1;
+                endpoint->epintflag = EPINTFLAG_STALL1;
+            }
+            if(epintflag & EPINTFLAG_TRFAIL1)
+            {
+                endpoint->epstatusclr = EPSTATUS_BK1RDY;
+                endpoint->epintflag = EPINTFLAG_TRFAIL1;
+            }
 
-        if(epintflag & ~(EPINTFLAG_RXSTP | EPINTFLAG_TRCPT0 | EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL0 | EPINTFLAG_TRFAIL1))
-        {
-            sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unsupported EPINTFLAG: "); 
-            dump(&epintflag, sizeof(epintflag));
+            if(epintflag & ~(EPINTFLAG_TRCPT0 | EPINTFLAG_TRCPT1 | EPINTFLAG_STALL1 |EPINTFLAG_TRFAIL0 | EPINTFLAG_TRFAIL1))
+            {
+                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unsupported EPINTFLAG: "); 
+                dump(&epintflag, sizeof(epintflag));
+            }
         }
     }
 }

@@ -6,6 +6,7 @@
 #include "usb_common.h"
 #include "sercom.h"
 #include "config.h"
+#include "utils.h"
 
 #define STRLEN(x) (sizeof(x) / sizeof((x)[0]))
 
@@ -303,7 +304,7 @@ const struct __attribute__((packed, aligned(4)))
     .midi_bulk_out = {
         .bLength = 9,
         .bDescriptorType = 0x5, // ENDPOINT descriptor
-        .bEndpointAddress = 0x01, // OUT 1
+        .bEndpointAddress = 0x02, // OUT 2
         .bmAttributes = 0x2, // Bulk, not shared
         .wMaxPacketSize = 64,
         .bInterval = 0,
@@ -321,10 +322,10 @@ const struct __attribute__((packed, aligned(4)))
 const struct __attribute__((aligned(4))) usb_qualifier_descriptor_t TALABARDINE_QUALIFIER_DESCRIPTOR = {
     .bLength = 10,
     .bDescriptorType = 0x6, // Device Qualifier Descriptor
-    .bcdUSB = TALABARDINE_USB_DESCRIPTOR.bcdUSB,
-    .bDeviceClass = TALABARDINE_USB_DESCRIPTOR.bDeviceClass,
-    .bDeviceSubClass = TALABARDINE_USB_DESCRIPTOR.bDeviceSubClass,
-    .bDeviceProtocol = TALABARDINE_USB_DESCRIPTOR.bDeviceProtocol,
+    .bcdUSB = 0x0200, //TALABARDINE_USB_DESCRIPTOR.bcdUSB,
+    .bDeviceClass = 0, //TALABARDINE_USB_DESCRIPTOR.bDeviceClass,
+    .bDeviceSubClass = 0, //TALABARDINE_USB_DESCRIPTOR.bDeviceSubClass,
+    .bDeviceProtocol = 0, //TALABARDINE_USB_DESCRIPTOR.bDeviceProtocol,
     .bMaxPacketSize0 = 64,
     .bNumConfigurations = 0,
     .bReserved = 0
@@ -336,46 +337,58 @@ const USB_LANGID_DESCRIPTOR_T(1) TALABARDINE_LANGID_DESCRIPTOR = {
 };
 const USB_UNICODE_DESCRIPTOR_T(TALABARDINE_MANUFACTURER, u"gberthou");
 
-static void dump(const void *_src, size_t size)
+static struct
 {
-    const unsigned char *src = _src;
-    for(size_t j = 0; j < size; ++j)
-    {
-        unsigned char c = *src++;
-        char repr[2];
-        for(size_t i = 0; i < 2; ++i)
-        {
-            unsigned char tmp = (c & 0xf);
-            if(tmp < 10)
-                tmp += '0';
-            else
-                tmp += 'a' - 10;
-            repr[i^1] = tmp;
-            c >>= 4;
-        }
-        sercom_usart_putc(SERCOM_MIDI_CHANNEL, repr[0]); 
-        sercom_usart_putc(SERCOM_MIDI_CHANNEL, repr[1]); 
-        if((j & 7) != 7)
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, ' '); 
-        else
-        {
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, '\r'); 
-            sercom_usart_putc(SERCOM_MIDI_CHANNEL, '\n'); 
-        }
-    }
+    usb_configuration_cb configuration_cb;
+    uint16_t selected_configuration;
+} context = {
+    .configuration_cb = NULL,
+    .selected_configuration = 0
+};
+
+static void usb_set_address_callback(const struct udc_control_callback *cb)
+{
+    udc_set_address(cb->wValue);
 }
 
-void usb_setup_packet(const void *_buf)
+static void usb_set_config_callback(const struct udc_control_callback *cb)
 {
-    const struct usb_setup_packet_t *packet = _buf;
+    uint16_t config = cb->wValue;
+    if(!config)
+    {
+        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unconf");
+        udc_endpoint_unconfigure();
+    }
+    else
+    {
+        const uint8_t *ptr = (uint8_t*)&TALABARDINE_CONFIG0_DESCRIPTOR;
+        const uint8_t *end = ptr + TALABARDINE_CONFIG0_DESCRIPTOR.configuration.wTotalLength;
+        for(ptr += ptr[0]; ptr < end; ptr += ptr[0])
+            if(ptr[1] == 0x05) // Endpoint descriptor
+                udc_endpoint_configure((void*)ptr);
+
+        // Notify higher level
+        if(context.configuration_cb != NULL)
+            context.configuration_cb(config);
+    }
+    context.selected_configuration = config;
+}
+
+void usb_setup_packet(const volatile void *_buf)
+{
+    const volatile struct usb_setup_packet_t *packet = _buf;
+    // TODO: order this
     uint16_t length = packet->wLength;
+    uint8_t bRequest = packet->bRequest;
+    uint8_t bmRequestType = packet->bmRequestType;
+    uint16_t wValue = packet->wValue;
 
     // GET
-    if(packet->bmRequestType == 0x80)
+    if(bmRequestType == 0x80)
     {
-        uint16_t type = (packet->wValue >> 8);
-        uint16_t id   = (packet->wValue & 0xff);
-        switch(packet->bRequest)
+        uint16_t type = (wValue >> 8);
+        uint16_t id   = (wValue & 0xff);
+        switch(bRequest)
         {
             case 0x06: //GET_DESCRIPTOR
                 switch(type)
@@ -384,7 +397,7 @@ void usb_setup_packet(const void *_buf)
                         if(id == 0)
                             udc_tx(0, &TALABARDINE_USB_DESCRIPTOR, sizeof(TALABARDINE_USB_DESCRIPTOR));
                         else
-                            udc_stall();
+                            udc_stall(0);
                         break;
                     case 0x02: // CONFIGURATION
                         if(id == 0)
@@ -404,7 +417,7 @@ void usb_setup_packet(const void *_buf)
                             udc_tx(0, &TALABARDINE_CONFIG0_DESCRIPTOR, size);
                         }
                         else
-                            udc_stall();
+                            udc_stall(0);
                         break;
                     case 0x03: // STRING
                         if(id == 0)
@@ -412,66 +425,72 @@ void usb_setup_packet(const void *_buf)
                         else if(id <= 3)
                             udc_tx(0, &TALABARDINE_MANUFACTURER, sizeof(TALABARDINE_MANUFACTURER));
                         else
-                            udc_stall();
+                            udc_stall(0);
                         break;
                     case 0x06: // DEVICE QUALIFIER
                         if(id == 0)
                             udc_tx(0, &TALABARDINE_QUALIFIER_DESCRIPTOR, sizeof(TALABARDINE_QUALIFIER_DESCRIPTOR));
                         else
-                            udc_stall();
+                            udc_stall(0);
                         break;
 
                     default:
                         sercom_usart_puts(SERCOM_MIDI_CHANNEL, "GD ");
-                        dump(&packet->wValue, sizeof(packet->wValue));
-                        udc_stall();
+                        dump(&wValue, sizeof(wValue));
+                        udc_stall(0);
                 }
                 break;
 
             default:
                 sercom_usart_puts(SERCOM_MIDI_CHANNEL, "[GET] Unknown SETUP.bRequest ");
-                dump(&packet->bRequest, sizeof(packet->bRequest));
+                dump(&bRequest, sizeof(bRequest));
                 sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
         }
     }
     // SET
-    else if(packet->bmRequestType == 0x00)
+    else if(bmRequestType == 0x00)
     {
-        switch(packet->bRequest)
+        switch(bRequest)
         {
             case 0x05: // SET_ADDRESS
             {
-                uint16_t address = packet->wValue;
-                udc_control_send();
-                udc_set_address(address);
+                struct udc_control_callback cb = {
+                    .type = UDC_CONTROL_SET_ADDRESS,
+                    .wValue = wValue,
+                    .callback = usb_set_address_callback
+                };
+                udc_control_send(&cb);
                 break;
             }
 
             case 0x09: // SET_CONFIGURATION
             {
-                uint16_t config = packet->wValue;
-                udc_control_send();
-                if(!config)
-                    udc_endpoint_unconfigure();
-                else
-                {
-                    const uint8_t *ptr = (uint8_t*)&TALABARDINE_CONFIG0_DESCRIPTOR;
-                    const uint8_t *end = ptr + TALABARDINE_CONFIG0_DESCRIPTOR.configuration.wTotalLength;
-                    for(ptr += ptr[0]; ptr < end; ptr += ptr[0])
-                        if(ptr[1] == 0x04) // Interface descriptor
-                            udc_endpoint_configure((void*)ptr);
-                    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "C\r\n");
-                }
+                struct udc_control_callback cb = {
+                    .type = UDC_CONTROL_SET_CONFIG,
+                    .wValue = wValue,
+                    .callback = usb_set_config_callback
+                };
+                udc_control_send(&cb);
                 break;
             }
 
             default:
                 sercom_usart_puts(SERCOM_MIDI_CHANNEL, "[SET] Unknown SETUP.bRequest ");
-                dump(&packet->bRequest, sizeof(packet->bRequest));
+                dump(&bRequest, sizeof(bRequest));
                 sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
         }
     }
     else
         sercom_usart_puts(SERCOM_MIDI_CHANNEL, "OOPS\r\n");
+}
+
+bool usb_is_configured(uint16_t config)
+{
+    return context.selected_configuration == config;
+}
+
+void usb_set_configuration_callback(usb_configuration_cb callback)
+{
+    context.configuration_cb = callback;
 }
 
