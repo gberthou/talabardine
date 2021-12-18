@@ -6,10 +6,17 @@
 
 struct __attribute__((packed)) atqt2120_key_t
 {
-    uint8_t en    : 1;
-    uint8_t gpo   : 1;
-    uint8_t aks   : 2;
-    uint8_t guard : 1;
+    union
+    {
+        struct
+        {
+            uint8_t en    : 1;
+            uint8_t gpo   : 1;
+            uint8_t aks   : 2;
+            uint8_t guard : 1;
+        } bits;
+        uint8_t raw;
+    } ctrl;
 
     uint8_t dthr;
 };
@@ -28,4 +35,3 @@ void atqt2120_init(const struct atqt2120_t *config);
 uint8_t atqt2120_read_status(void);
 
 #endif
-

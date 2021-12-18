@@ -2,6 +2,7 @@
 
 #include "sercom.h"
 #include "gclk.h"
+#include "config.h"
 
 struct __attribute__((packed)) sercom_usart_t
 {
@@ -81,19 +82,65 @@ struct __attribute__((packed)) sercom_i2c_master_t
 #define SERCOM0 0x42000800
 #define SERCOM(i) ((volatile void*)(SERCOM0 + ((i) << 10)))
 
+#define SYNCBUSY_SWRST (1 << 0)
 #define SYNCBUSY_ENABLE (1 << 1)
-#define SYNCBUSY_CTRLB  (1 << 2)
+#define SYNCBUSY_SYSOP  (1 << 2)
 
 #define INTFLAG_DRE (1 << 0)
 #define INTFLAG_RXC (1 << 2)
 
-// i2c
-#define INTFLAG_MB (1 << 0)
-#define INTFLAG_SB (1 << 1)
+#define I2C_CTRLA_SWRST (1 << 0)
+#define I2C_CTRLA_ENABLE (1 << 1)
+#define I2C_CTRLA_MODE_MASTER (0x5 << 2)
+#define I2C_CTRLA_SCLSM (1 << 27)
+
+#define I2C_CTRLB_CMD_NOP (0x0 << 16)
+#define I2C_CTRLB_CMD_ACKSTART (0x1 << 16)
+#define I2C_CTRLB_CMD_ACKREAD (0x2 << 16)
+#define I2C_CTRLB_CMD_ACKSTOP (0x3 << 16)
+#define I2C_CTRLB_ACKACT (1 << 18)
+#define I2C_CTRLB_FIFOCLR_TX (1 << 22)
+#define I2C_CTRLB_FIFOCLR_RX (1 << 23)
+
+#define I2C_STATUS_BUSSTATE_SHIFT 4
+#define I2C_STATUS_ARBLOST (1 << 1)
+#define I2C_STATUS_RXNACK (1 << 2)
+
+#define I2C_INTFLAG_MB (1 << 0)
+#define I2C_INTFLAG_SB (1 << 1)
+#define I2C_INTFLAG_ERROR (1 << 7)
 
 #define NCHANS 6
 
 #define BAUDMAX 0xffffu
+
+enum i2c_master_busstate_e
+{
+    I2C_STATUS_BUSSTATE_UNKNOWN,
+    I2C_STATUS_BUSSTATE_IDLE,
+    I2C_STATUS_BUSSTATE_OWNER,
+    I2C_STATUS_BUSSTATE_BUSY
+};
+
+static volatile struct  
+{
+    enum
+    {
+        I2C_STATE_IDLE,
+        I2C_STATE_ERROR,
+        I2C_STATE_WRITE,
+        I2C_STATE_READ,
+        I2C_STATE_DONE
+    } state;
+    
+    union
+    {
+        uint8_t *ptr;
+        const uint8_t *cptr;
+    } data;
+    
+    size_t size;
+} i2c_master_context[N_SERCOMS];
 
 static char digit2char(uint8_t x)
 {
@@ -192,7 +239,7 @@ void sercom_init_usart(uint8_t channel, enum usart_txpo_e txpo, enum usart_rxpo_
                  | (rxpo != USART_RXPO_DISABLE ? (1 << 17) : 0) // RXEN
                  | (0x3 << 22) // Clear fifos
                  ;
-    while(usart->syncbusy & SYNCBUSY_CTRLB);
+    while(usart->syncbusy & SYNCBUSY_SYSOP);
     usart->baud = hz_to_baud_async(baudrate_Hz);
 
     usart->ctrla |= (1 << 1); // Enable
@@ -260,7 +307,7 @@ void sercom_init_spi_master(uint8_t channel, enum spi_dopo_e dopo, enum spi_dipo
                | (1 << 17) // RXEN
                | (0x3 << 22) // Clear fifos
                ;
-    while(spi->syncbusy & SYNCBUSY_CTRLB);
+    while(spi->syncbusy & SYNCBUSY_SYSOP);
     spi->baud = hz_to_baud_sync(baudrate_Hz);
 
     spi->ctrla |= (1 << 1); // Enable
@@ -287,52 +334,57 @@ void sercom_spi_burst(uint8_t channel, enum gpio_port_e ce_port, uint8_t ce_pin,
     gpio_set_output(ce_port, ce_pin, true);
 }
 
+static inline enum i2c_master_busstate_e sercom_i2c_get_busstate(uint8_t channel)
+{
+    volatile struct sercom_i2c_master_t *i2c = SERCOM(channel);
+    return ((i2c->status >> I2C_STATUS_BUSSTATE_SHIFT) & 0x3);
+}
+
 // Assumes that GCLK0 is running at 48MHz
 void sercom_init_i2c_master(uint8_t channel, uint32_t baudrate_Hz)
 {
     channel %= NCHANS;
     volatile struct sercom_i2c_master_t *i2c = SERCOM(channel);
+    
+    i2c_master_context[channel].state = I2C_STATE_IDLE;
 
     // Connect SERCOMx_CORE clock to GCLK0 (main)
     // GCLK0 must be running at 48MHz prior to this point
-    gclk_connect_clock(GCLK_DST_SERCOM0_CORE + channel, 0); 
+    gclk_connect_clock(GCLK_DST_SERCOMx_SLOW, 0);
+    gclk_connect_clock(GCLK_DST_SERCOM0_CORE + channel, 0);
 
-    i2c->ctrla = 1; // Disable + software reset
-    while(i2c->syncbusy & SYNCBUSY_ENABLE);
+    do 
+    {
+        i2c->ctrla = I2C_CTRLA_SWRST; // Disable + software reset
+        while(i2c->syncbusy & SYNCBUSY_SWRST);
 
-    /*
-     * 5.2. Write the Baud Rate register (BAUD) to generate the desired baud rate.
-     */
+        /*
+         * 5.2. Write the Baud Rate register (BAUD) to generate the desired baud rate.
+         */
+        uint32_t speed;
+        if(baudrate_Hz >= 1000000)
+            speed = (2 << 24); // Hs-mode
+        else if(baudrate_Hz > 400000)
+            speed = (1 << 24); // Fm+
+        else
+            speed = 0; // Sm or Fm
 
-    uint32_t speed = 0;
-    if(baudrate_Hz >= 1000000)
-        speed = (2 << 24);
-    else if(baudrate_Hz > 400000)
-        speed = (1 << 24);
-
-    i2c->ctrla = (0x5 << 2) // MODE (I2C master)
-               | (0 << 16) // PINOUT (4-wire disabled)
-               | (0x0 << 20) // SDAHOLD (TODO check)
-               | (0 << 22) // MEXTTOEN (Disable timeout)
-               | (0 << 23) // SEXTTOEN (Disable timeout)
-               | (0 << 27) // SCLSM (TODO check)
-               | (0x0 << 28) // INACTOUT (Disable timeout)
-               | (0 << 30) // LOWTOUT (Disable timeout)
-               | speed
-               ;
-    i2c->ctrlb = (0 << 8) // SMEN (Smart mode disabled)
-               | (0 << 9) // QCEN (Quick command disabled)
-               | (0x3 << 22) // Clear fifos
-               ;
-    while(i2c->syncbusy & SYNCBUSY_CTRLB);
-    i2c->baud = hz_to_baud_i2c_master(baudrate_Hz);
-
-    i2c->ctrla |= (1 << 1); // Enable
-    while(i2c->syncbusy & SYNCBUSY_ENABLE);
-
-    // Force idle mode
-    //i2c->ctrlb = (0x3 << 16); // CMD = ack + stop
-    i2c->status = (0x1 << 4);
+        i2c->ctrla = I2C_CTRLA_MODE_MASTER
+                   | speed
+                   ;
+        i2c->ctrlb = I2C_CTRLB_FIFOCLR_TX
+                   | I2C_CTRLB_FIFOCLR_RX
+                   ;
+        while(i2c->syncbusy & SYNCBUSY_SYSOP);
+        i2c->baud = hz_to_baud_i2c_master(baudrate_Hz);
+                 
+        i2c->ctrla |= I2C_CTRLA_ENABLE; // Enable
+        while(i2c->syncbusy & SYNCBUSY_ENABLE);
+        
+        // Force idle mode
+        i2c->status = (I2C_STATUS_BUSSTATE_IDLE << I2C_STATUS_BUSSTATE_SHIFT);
+        while(i2c->syncbusy & SYNCBUSY_SYSOP);
+    } while(sercom_i2c_get_busstate(channel) != I2C_STATUS_BUSSTATE_IDLE);
 }
 
 void sercom_i2c_write(uint8_t channel, uint16_t address, const uint8_t *data, size_t length)
@@ -341,32 +393,27 @@ void sercom_i2c_write(uint8_t channel, uint16_t address, const uint8_t *data, si
     address &= 0x7f;
     address <<= 1;
     volatile struct sercom_i2c_master_t *i2c = SERCOM(channel);
-
-    /*
-     * 1. ADDR.ADDR
-     * Wrong <= STATUS.ARBLOST=1
-     * Everything goes well <= INTFLAG.MB=1 and STATUS.RXNACK=0
-     * 2. DATA.DATA
-     * Wrong <= STATUS.ARBLOST=1
-     * Everything goes well <= INTFLAG.MB=1 and STATUS.RXNACK=0
-     * Wait until INTFLAG.MB becomes 1
-     * Manually send a NACK or ACK (CTRLB.ACKACT, CTRLB.CMD)
-     */
-    i2c->addr = address;
-    // TODO: test STATUS.ARBLOST
-    // TODO: test STATUS.BUSERR
-    while(!(i2c->intflag & INTFLAG_MB));
-    // TODO: test STATUS.RXNACK == 0
-
-    while(length--)
+    
+    do 
     {
-        i2c->data = *data++;
-        // TODO: test STATUS.ARBLOST
-        while(!(i2c->intflag & INTFLAG_MB));
-        // TODO: test STATUS.RXNACK == 0
-    }
-
-    i2c->ctrlb = (0x3 << 16); // CMD = ack + stop
+        i2c_master_context[channel].state = I2C_STATE_WRITE;
+        i2c_master_context[channel].data.cptr = data;
+        i2c_master_context[channel].size = length;
+        
+        i2c->intflag = I2C_INTFLAG_MB
+                     | I2C_INTFLAG_SB
+                     | I2C_INTFLAG_ERROR
+                     ;
+        i2c->intenset = I2C_INTFLAG_MB
+                      | I2C_INTFLAG_SB
+                      | I2C_INTFLAG_ERROR
+                      ;
+        i2c->addr = address;
+        
+        while(i2c_master_context[channel].state != I2C_STATE_DONE && i2c_master_context[channel].state != I2C_STATE_ERROR);
+    } while(i2c_master_context[channel].state == I2C_STATE_ERROR);
+    
+    while(sercom_i2c_get_busstate(channel) != I2C_STATUS_BUSSTATE_IDLE);
 }
 
 void sercom_i2c_read(uint8_t channel, uint16_t address, uint8_t *data, size_t length)
@@ -374,39 +421,116 @@ void sercom_i2c_read(uint8_t channel, uint16_t address, uint8_t *data, size_t le
     channel %= NCHANS;
     address &= 0x7f;
     address <<= 1;
-    address |= 1; // Read bit
+    address |= 1;
     volatile struct sercom_i2c_master_t *i2c = SERCOM(channel);
-
-    // 28.6.2.4.2
-    // Figure 28-4
-    /*
-     * 1. ADDR.ADDR
-     * Wrong <= STATUS.ARBLOST=1
-     * Everything goes well <= INTFLAG.MB=1 and STATUS.RXNACK=0
-     * 2. DATA.DATA
-     * Wrong <= STATUS.ARBLOST=1
-     * Everything goes well <= INTFLAG.MB=1 and STATUS.RXNACK=0
-     * Wait until INTFLAG.MB becomes 1
-     * Manually send a NACK or ACK (CTRLB.ACKACT, CTRLB.CMD)
-     */
-
-    i2c->addr = address;
-    // TODO: test STATUS.ARBLOST
-    // TODO: test STATUS.BUSERR
-    while(!(i2c->intflag & INTFLAG_SB));
-    // TODO: test STATUS.RXNACK == 0
-
-    while(length--)
+    
+    do 
     {
-        uint16_t tmp = i2c->data;
-        *data++ = tmp;
-        while(!(i2c->intflag & INTFLAG_SB));
+        i2c_master_context[channel].state = I2C_STATE_READ;
+        i2c_master_context[channel].data.ptr = data;
+        i2c_master_context[channel].size = length;
 
-        if(length > 0)
-            i2c->ctrlb = (0x2 << 16); // CMD = ack + byte read
-    }
-
-    i2c->ctrlb = (0x3 << 16)
-               | (1 << 18); // CMD = nack + stop
+        i2c->intflag = I2C_INTFLAG_MB
+                     | I2C_INTFLAG_SB
+                     | I2C_INTFLAG_ERROR
+                     ;
+        i2c->intenset = I2C_INTFLAG_MB
+                      | I2C_INTFLAG_SB
+                      | I2C_INTFLAG_ERROR
+                      ;
+        i2c->addr = address;
+        
+        while(i2c_master_context[channel].state != I2C_STATE_DONE && i2c_master_context[channel].state != I2C_STATE_ERROR);
+    } while(i2c_master_context[channel].state == I2C_STATE_ERROR);
+    
+    while(sercom_i2c_get_busstate(channel) != I2C_STATUS_BUSSTATE_IDLE);
 }
 
+void sercom_i2c_interrupt(uint8_t channel)
+{
+    volatile struct sercom_i2c_master_t *i2c = SERCOM(channel);
+    uint8_t intflag = i2c->intflag;
+    uint16_t status = i2c->status;
+    enum i2c_master_busstate_e state = sercom_i2c_get_busstate(channel);
+    
+    if(status & I2C_STATUS_ARBLOST) // Case 1: Arbitration lost or bus error during address packet transmission
+    {
+        // Never occurred yet, thus untested
+        i2c_master_context[channel].state = I2C_STATE_ERROR;
+        i2c->ctrlb = I2C_CTRLB_CMD_ACKSTOP;
+        i2c->status = I2C_STATUS_ARBLOST;
+        i2c->intflag = I2C_INTFLAG_MB;
+        return;
+    }
+    if(status & I2C_STATUS_RXNACK) // Case 2: Address packet transmit complete – No ACK received
+    {
+        i2c_master_context[channel].state = I2C_STATE_ERROR;
+        i2c->ctrlb = I2C_CTRLB_CMD_ACKSTOP;
+        i2c->status = I2C_STATUS_RXNACK;
+        i2c->intflag = I2C_INTFLAG_MB;
+        return;
+    }
+    if(status & 0x0747) // Not supported yet
+    {
+        for(;;);
+    }
+    
+    if(state == I2C_STATUS_BUSSTATE_OWNER)
+    {
+        if(intflag & I2C_INTFLAG_MB) // Case 3: Address packet transmit complete – Write packet, Master on Bus set
+        {
+            switch(i2c_master_context[channel].state)
+            {
+                case I2C_STATE_WRITE:
+                    if(i2c_master_context[channel].size--)
+                        i2c->data = *i2c_master_context[channel].data.cptr++;
+                    else
+                    {
+                        i2c->ctrlb = I2C_CTRLB_CMD_ACKSTOP;
+                        while(i2c->syncbusy & SYNCBUSY_SYSOP);
+                        i2c_master_context[channel].state = I2C_STATE_DONE;
+                    }
+                    i2c->intflag = I2C_INTFLAG_MB;
+                    return;
+                    
+                default:
+                    break;
+            }
+            // Should not reach here
+        }
+        if(intflag & I2C_INTFLAG_SB)
+        {
+            switch(i2c_master_context[channel].state)
+            {
+                case I2C_STATE_READ:
+                    if(i2c_master_context[channel].size)
+                    {
+                        *i2c_master_context[channel].data.ptr++ = i2c->data;
+                        if(--i2c_master_context[channel].size)
+                        {
+                            i2c->ctrlb = I2C_CTRLB_CMD_ACKREAD;
+                            while(i2c->syncbusy & SYNCBUSY_SYSOP);
+                        }
+                        else
+                        {
+                            i2c->ctrlb = I2C_CTRLB_CMD_ACKSTOP
+                                       | I2C_CTRLB_ACKACT // NACK
+                                       ;
+                            while(i2c->syncbusy & SYNCBUSY_SYSOP);
+                            i2c_master_context[channel].state = I2C_STATE_DONE;
+                        }
+                        i2c->intflag = I2C_INTFLAG_SB;
+                        return;
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+            // Should not reach here
+        }
+    }
+    
+    // Should not reach here
+    for(;;);
+}

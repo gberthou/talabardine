@@ -6,6 +6,8 @@
 
 #include "gpio.h"
 
+#define N_SERCOMS 5
+
 enum usart_txpo_e
 {
     USART_TXPO_PAD0 = 0,
@@ -53,6 +55,7 @@ void sercom_spi_burst(uint8_t channel, enum gpio_port_e ce_port, uint8_t ce_pin,
 void sercom_init_i2c_master(uint8_t channel, uint32_t baudrate_Hz);
 void sercom_i2c_write(uint8_t channel, uint16_t address, const uint8_t *data, size_t length);
 void sercom_i2c_read(uint8_t channel, uint16_t address, uint8_t *data, size_t length);
+void sercom_i2c_interrupt(uint8_t channel);
 
 #endif
 

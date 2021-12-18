@@ -16,6 +16,7 @@
 #include "usb.h"
 #include "usb_midi.h"
 #include "usb_talabardine.h"
+#include "utils.h"
 
 #define EIC_KEYCHANGE 5
 
@@ -23,8 +24,6 @@
 #define PRESSURE_OCT2 ABP_PA_2_COUNTS(4000)
 
 #define OCTAVE_OFFSET 4
-
-#define SERCOM_MIDI 1
 
 /*
  * Pin mapping:
@@ -48,20 +47,21 @@
  *         PB07
  */
 
+#define KEY_DTHR 32
 const struct atqt2120_t keys_config = {
     .keys = {
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 0, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64},
-        {.en = 1, .gpo = 0, .aks = 0, .guard = 0, .dthr = 64}
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 0, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 1, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 1, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 1, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 1, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR},
+        {.ctrl.bits = {.en = 1, .gpo = 0, .aks = 0, .guard = 0}, .dthr = KEY_DTHR}
     },
     .change_port = GPIO_PORT_B,
     .change_pin = 5,
@@ -152,7 +152,6 @@ static void replace_note(int note)
 
     // 4. Send command
     //sercom_usart_puts(SERCOM_MIDI, (char*) command);
-    //usb_midi_bulk(command, ptr + 1 - command);
 
     // 5. Update current_note
     current_note = note;
@@ -161,12 +160,10 @@ static void replace_note(int note)
 static void talabardine_init_gpios(void)
 {
     // Codec (SERCOM 0)
-    /*
-    gpio_configure_function(GPIO_PORT_A, 8, GPIO_FUNC_C);
-    gpio_configure_function(GPIO_PORT_A, 9, GPIO_FUNC_C);
-    gpio_configure_function(GPIO_PORT_A, 10, GPIO_FUNC_C);
-    gpio_configure_function(GPIO_PORT_A, 11, GPIO_FUNC_C);
-    */
+    //gpio_configure_function(GPIO_PORT_A, 8, GPIO_FUNC_C);
+    //gpio_configure_function(GPIO_PORT_A, 9, GPIO_FUNC_C);
+    //gpio_configure_function(GPIO_PORT_A, 10, GPIO_FUNC_C);
+    //gpio_configure_function(GPIO_PORT_A, 11, GPIO_FUNC_C);
 
     // USART (SERCOM 1)
     gpio_configure_function(GPIO_PORT_A, 0, GPIO_FUNC_D);
@@ -198,10 +195,8 @@ static void talabardine_init_gpios(void)
 
 static void talabardine_init_sercoms(void)
 {
-    //sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 31250);
-    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, 115200);
+    sercom_init_usart(SERCOM_MIDI_CHANNEL, USART_TXPO_PAD0, USART_RXPO_DISABLE, /*31250*/ 115200);
     sercom_init_spi_master(SERCOM_PRESSURE_CHANNEL, SPI_OUT_PAD312, SPI_IN_PAD0, 800000);
-
     sercom_init_i2c_master(SERCOM_KEYS_CHANNEL, 400000);
 }
 
@@ -215,7 +210,6 @@ void talabardine_init(void)
     // 37.12: NVM needs at least 1 wait state @48MHz when Vcc > 2.7v
     nvmctrl_set_wait_states(1);
     gclk_set_frequency(GCLK0, 48000000); // Main clock @48MHz
-    gclk_set_frequency(GCLK1, 48000000);
 
     pm_enable_APB_clock(PM_CLK_SERCOM0, true);
     pm_enable_APB_clock(PM_CLK_SERCOM1, true);
@@ -225,30 +219,38 @@ void talabardine_init(void)
 
     talabardine_init_gpios();
     talabardine_init_sercoms();
+    
+    gpio_set_output(GPIO_PORT_B, 7, true);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Press button to start");
+    for(size_t i = 0; gpio_read(GPIO_PORT_A, 8); ++i)
+    {
+        sercom_usart_putc(SERCOM_MIDI_CHANNEL, (i & 1) ? '\b' : '_');
+        for(size_t j = 0; j < 5000000; ++j)
+            asm volatile("nop");
+    }
+    gpio_set_output(GPIO_PORT_B, 7, false);
+    
+    nvic_enable(NVIC_SERCOM0 + SERCOM_KEYS_CHANNEL);
+    interrupt_enable();
+    atqt2120_init(&keys_config);
+    keys = atqt2120_read_status();
 
-    //eic_init();
-    //eic_enable(EIC_KEYCHANGE);
-    //nvic_enable(NVIC_EIC);
-    //nvic_enable(NVIC_TC3);
+    /* Normally, EIC has higher (lower value) priority than SERCOM4 (keys), so we have to reverse
+     * priority in order, for the key handler, to be able to use interrupt-based I2C.
+     * Priority bits 5:0 are ignored so it starts with 64.
+     */
+    nvic_set_priority(NVIC_EIC, 64);
+    eic_init();
+    eic_enable(EIC_KEYCHANGE);
+    nvic_enable(NVIC_EIC);
+    
+    tc_init(TC3, GCLK0, 1000);
+    nvic_enable(NVIC_TC3);
 
-    //atqt2120_init(&keys_config);
-
-    //tc_init(TC3, GCLK0, 1000);
-
-    //keys = atqt2120_read_status();
     octave = 0;
 
-    usb_talabardine_init();
-    nvic_enable(NVIC_USB);
-    interrupt_enable();
-
-    int note = MIDI_NOTE_A;
-    octave = 1;
-    do
-    {
-        replace_note(note++);
-        for(size_t i = 0; i < 1000000; ++i);
-    } while(1);
+    //usb_talabardine_init();
+    //nvic_enable(NVIC_USB);
 }
 
 void keychange_handler(void)
@@ -256,8 +258,12 @@ void keychange_handler(void)
     eic_clear(EIC_KEYCHANGE);
     nvic_clear(NVIC_EIC);
 
-    uint8_t new_keys = atqt2120_read_status();
+    uint8_t new_keys = atqt2120_read_status(); // Reads AND acknowledges the interrupt on the ATQT2120 side
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Key: ");
+    dump(&new_keys, 1);
+    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
 
+    /*
     if(octave > 0) // Was playing
     {
         unsigned int octave_modifier;
@@ -266,6 +272,7 @@ void keychange_handler(void)
         replace_note(new_note);
     }
     keys = new_keys;
+    */
 }
 
 void pressure_handler(void)
@@ -298,5 +305,11 @@ void pressure_handler(void)
 
         pressure = new_pressure;
     }
+}
+
+void sercom4_handler(void) // keys i2c
+{
+    nvic_clear(NVIC_SERCOM0 + 4);
+    sercom_i2c_interrupt(4);
 }
 

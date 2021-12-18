@@ -1,12 +1,14 @@
 #include "atqt2120.h"
 #include "sercom.h"
+#include "config.h"
 
-#define SERCOMID 4
+#define SERCOMID SERCOM_KEYS_CHANNEL
 #define ATQT2120_I2C_ADDRESS 0x1c
 
 #define NKEYS 12
 
 #define ADD_DETECTION_STATUS 2
+#define ADD_CALIBRATE 7
 #define ADD_RESET 7
 #define ADD_DI 11
 #define ADD_DTHR0 16
@@ -29,20 +31,6 @@
     sercom_i2c_read(SERCOMID, ATQT2120_I2C_ADDRESS, (data), (length));\
 } while(0)
 
-#if 0
-void atqt2120_test(void)
-{
-    uint8_t ret[16];
-    for(size_t i = 0; i < sizeof(ret); ++i)
-        ret[i] = 0xde;
-
-    i2c_read(0, ret, sizeof(ret));
-
-    for(size_t i = 0; i < sizeof(ret); ++i)
-        sercom_usart_display_half(ret[i]);
-}
-#endif
-
 void atqt2120_init(const struct atqt2120_t *config)
 {
     union key_u {
@@ -61,13 +49,8 @@ void atqt2120_init(const struct atqt2120_t *config)
     i2c_write(tmp, 2);
 
     while(gpio_read(config->change_port, config->change_pin));
-    atqt2120_read_status();
     while(!gpio_read(config->change_port, config->change_pin));
-
-    tmp[0] = 16; // DTHR
-    for(size_t i = 0; i++ < NKEYS;)
-        tmp[i] = 64;
-    i2c_write(tmp, NKEYS + 1);
+    atqt2120_read_status();
     
     // 2. Set DI (lower = higher time-related reactivity)
     tmp[0] = ADD_DI;
@@ -78,11 +61,15 @@ void atqt2120_init(const struct atqt2120_t *config)
     tmp[0] = ADD_DTHR0;
     for(size_t i = 0; i < NKEYS; ++i)
     {
-        union key_u k = {.key = config->keys[i]};
-        tmp[i        ] = k.data[0];
-        tmp[i + NKEYS] = k.data[1];
+        tmp[i+1        ] = config->keys[i].ctrl.raw;
+        tmp[i+1 + NKEYS] = config->keys[i].dthr;
     }
     i2c_write(tmp, 2 * NKEYS + 1);
+    
+    // 4. Calibrate
+    tmp[0] = ADD_CALIBRATE;
+    tmp[1] = 1;
+    i2c_write(tmp, 2);
     
     // Now, enable interrupts on /CHANGE signal
     gpio_configure_function(config->change_port, config->change_pin, GPIO_FUNC_A);
@@ -92,6 +79,6 @@ uint8_t atqt2120_read_status(void)
 {
     uint8_t tmp[3];
     i2c_read(ADD_DETECTION_STATUS, tmp, 3);
-    return tmp[2];
+    return tmp[1];
 }
 

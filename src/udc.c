@@ -3,6 +3,7 @@
 #include <string.h>
 
 #include "udc.h"
+#include "nvic.h"
 #include "usb.h"
 #include "gclk.h"
 #include "nvm.h"
@@ -403,6 +404,7 @@ void usb_handler(void)
 {
     uint16_t intflag = USB->intflag;
     uint16_t summary = USB->epintsmry;
+    nvic_clear(NVIC_USB);
     
     if(intflag & INTFLAG_SUSPEND)
     {
