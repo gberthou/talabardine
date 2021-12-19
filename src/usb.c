@@ -355,10 +355,7 @@ static void usb_set_config_callback(const struct udc_control_callback *cb)
 {
     uint16_t config = cb->wValue;
     if(!config)
-    {
-        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unconf");
         udc_endpoint_unconfigure();
-    }
     else
     {
         const uint8_t *ptr = (uint8_t*)&TALABARDINE_CONFIG0_DESCRIPTOR;
@@ -435,16 +432,14 @@ void usb_setup_packet(const volatile void *_buf)
                         break;
 
                     default:
-                        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "GD ");
-                        dump(&wValue, sizeof(wValue));
+                        // Unsupported GET_DESCRIPTOR
                         udc_stall(0);
                 }
                 break;
 
             default:
-                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "[GET] Unknown SETUP.bRequest ");
-                dump(&bRequest, sizeof(bRequest));
-                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
+                // Unsupported SETUP.bRequest
+                break;
         }
     }
     // SET
@@ -475,13 +470,14 @@ void usb_setup_packet(const volatile void *_buf)
             }
 
             default:
-                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "[SET] Unknown SETUP.bRequest ");
-                dump(&bRequest, sizeof(bRequest));
-                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "\r\n");
+                // Unsupported SETUP.bRequest
+                break;
         }
     }
     else
-        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "OOPS\r\n");
+    {
+        // Unsupported bmRequestType
+    }
 }
 
 bool usb_is_configured(uint16_t config)

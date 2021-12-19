@@ -116,7 +116,7 @@ static volatile uint8_t __attribute__((aligned(4))) buf1[EP_BUFFER_SIZE];
 static struct
 {
     void (*receive_callbacks[NENDPOINTS-1])(void);
-    bool pending_tx[NENDPOINTS-1];
+    void (*send_callbacks[NENDPOINTS-1])(void);
     
     uint8_t last_address;
     bool suspended;
@@ -333,20 +333,8 @@ void udc_tx(uint8_t ep, const void *data, size_t size)
     if(ep == 0)
         async_wait_for_ep(ep, EPINTFLAG_TRCPT1 | EPINTFLAG_TRFAIL1);
     else
-    {
-        context.pending_tx[ep-1] = true;
         async_wait_for_ep(ep, EPINTFLAG_TRCPT1);
-    }
     endpoint->epstatusset = EPSTATUS_BK1RDY;
-}
-
-void udc_busy_wait_tx_free(uint8_t ep)
-{
-    if(ep)
-    {
-        volatile bool *ptr = &context.pending_tx[ep - 1];
-        while(*ptr);
-    }
 }
 
 void udc_control_send(const struct udc_control_callback *cb)
@@ -384,15 +372,22 @@ void udc_set_address(uint8_t address)
 
 void udc_stall(uint8_t ep)
 {
-    sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Stalling...\r\n"); 
+    //sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Stalling...\r\n"); 
     ENDPOINT(ep)->epstatusset = EPSTATUS_STALLRQ1;
 }
 
-void udc_set_receive_callback(uint8_t ep, void (*callback)(void))
+void udc_register_receive_callback(uint8_t ep, void (*callback)(void))
 {
     if(ep < 1)
         return;
     context.receive_callbacks[ep - 1] = callback;
+}
+
+void udc_register_send_callback(uint8_t ep, void (*callback)(void))
+{
+    if(ep < 1)
+        return;
+    context.send_callbacks[ep - 1] = callback;
 }
 
 bool udc_is_suspended(void)
@@ -423,8 +418,7 @@ void usb_handler(void)
     }
     if(intflag & ~(INTFLAG_SUSPEND | INTFLAG_WAKEUP | INTFLAG_EORST | INTFLAG_SOF | INTFLAG_EORSM))
     {
-        sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unsupported INTFLAG: "); 
-        dump(&intflag, sizeof(intflag));
+        // Unsupported INTFLAG
     }
 
     for(size_t i = 0; summary; ++i, summary >>= 1)
@@ -462,11 +456,13 @@ void usb_handler(void)
                 endpoint->epstatusclr = EPSTATUS_BK0RDY;
                 endpoint->epintflag = EPINTFLAG_TRCPT0;
             }
-        
             if(epintflag & EPINTFLAG_TRCPT1)
             {
-                context.pending_tx[i-1] = false;
                 endpoint->epintflag = EPINTFLAG_TRCPT1;
+                
+                void (*f)(void) = context.send_callbacks[i - 1];
+                if(f)
+                    f();
             }
             if(epintflag & EPINTFLAG_TRFAIL0)
             {
@@ -486,8 +482,7 @@ void usb_handler(void)
 
             if(epintflag & ~(EPINTFLAG_TRCPT0 | EPINTFLAG_TRCPT1 | EPINTFLAG_STALL1 |EPINTFLAG_TRFAIL0 | EPINTFLAG_TRFAIL1))
             {
-                sercom_usart_puts(SERCOM_MIDI_CHANNEL, "Unsupported EPINTFLAG: "); 
-                dump(&epintflag, sizeof(epintflag));
+                // Unsupported EPINTFLAG
             }
         }
     }

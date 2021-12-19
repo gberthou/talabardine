@@ -8,8 +8,9 @@
 #define NKEYS 12
 
 #define ADD_DETECTION_STATUS 2
-#define ADD_CALIBRATE 7
+#define ADD_CALIBRATE 6
 #define ADD_RESET 7
+#define ADD_TTD 9
 #define ADD_DI 11
 #define ADD_DTHR0 16
 
@@ -56,13 +57,18 @@ void atqt2120_init(const struct atqt2120_t *config)
     tmp[0] = ADD_DI;
     tmp[1] = config->di;
     i2c_write(tmp, 2);
+    
+    tmp[0] = ADD_TTD;
+    tmp[1] = 1; // TTD
+    tmp[2] = 1; // ATD
+    i2c_write(tmp, 3);
 
     // 3. Configure keys
     tmp[0] = ADD_DTHR0;
     for(size_t i = 0; i < NKEYS; ++i)
     {
-        tmp[i+1        ] = config->keys[i].ctrl.raw;
-        tmp[i+1 + NKEYS] = config->keys[i].dthr;
+        tmp[i+1        ] = config->keys[i].dthr;
+        tmp[i+1 + NKEYS] = config->keys[i].ctrl.raw;
     }
     i2c_write(tmp, 2 * NKEYS + 1);
     
